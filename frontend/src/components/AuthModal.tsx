@@ -37,7 +37,12 @@ export default function AuthModal({ onClose, onLogin, onSignup }: AuthModalProps
       >
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-bold text-slate-900">{mode === "login" ? "Sign in" : "Create account"}</h2>
-          <button type="button" onClick={onClose} aria-label="Close" className="text-xl text-slate-400">
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="flex h-11 w-11 items-center justify-center text-xl text-slate-400"
+          >
             ✕
           </button>
         </div>
@@ -49,7 +54,7 @@ export default function AuthModal({ onClose, onLogin, onSignup }: AuthModalProps
             placeholder="Email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm"
+            className="min-h-11 rounded-lg border border-slate-200 px-3 py-2.5 text-sm"
             autoComplete="email"
           />
           <input
@@ -59,7 +64,7 @@ export default function AuthModal({ onClose, onLogin, onSignup }: AuthModalProps
             placeholder="Password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm"
+            className="min-h-11 rounded-lg border border-slate-200 px-3 py-2.5 text-sm"
             autoComplete={mode === "login" ? "current-password" : "new-password"}
           />
 
@@ -80,7 +85,7 @@ export default function AuthModal({ onClose, onLogin, onSignup }: AuthModalProps
             setMode(mode === "login" ? "signup" : "login");
             setError(null);
           }}
-          className="mt-4 w-full text-center text-sm text-indigo-600"
+          className="mt-4 flex min-h-11 w-full items-center justify-center text-center text-sm text-indigo-600"
         >
           {mode === "login" ? "New here? Create an account" : "Already have an account? Sign in"}
         </button>

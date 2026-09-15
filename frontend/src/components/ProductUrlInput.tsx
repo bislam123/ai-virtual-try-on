@@ -54,7 +54,11 @@ export default function ProductUrlInput({ onExtracted, initialUrl }: ProductUrlI
 
   if (!expanded) {
     return (
-      <button type="button" onClick={() => setExpanded(true)} className="text-xs font-medium text-indigo-600">
+      <button
+        type="button"
+        onClick={() => setExpanded(true)}
+        className="flex min-h-11 items-center text-xs font-medium text-indigo-600"
+      >
         Or paste a product URL
       </button>
     );
@@ -69,13 +73,13 @@ export default function ProductUrlInput({ onExtracted, initialUrl }: ProductUrlI
           placeholder="https://example.com/product/..."
           value={url}
           onChange={(e) => setUrl(e.target.value)}
-          className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm"
+          className="min-h-11 min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm"
         />
         <button
           type="button"
           onClick={() => void fetchUrl(url)}
           disabled={isLoading || !url.trim()}
-          className="shrink-0 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+          className="min-h-11 shrink-0 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
         >
           {isLoading ? "Fetching..." : "Fetch"}
         </button>

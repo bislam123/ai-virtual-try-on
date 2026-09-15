@@ -36,7 +36,7 @@ function PickerButton({
       <button
         type="button"
         onClick={() => inputRef.current?.click()}
-        className="flex-1 min-w-0 rounded-xl border-2 border-indigo-200 bg-white px-4 py-3 text-sm font-semibold text-indigo-700 shadow-sm active:scale-[0.98] transition hover:border-indigo-400"
+        className="min-h-11 flex-1 min-w-0 rounded-xl border-2 border-indigo-200 bg-white px-4 py-3 text-sm font-semibold text-indigo-700 shadow-sm active:scale-[0.98] transition hover:border-indigo-400"
       >
         {config.label}
       </button>
@@ -93,7 +93,7 @@ export default function PhotoPicker({ title, file, onChange, buttons, previewAlt
             type="button"
             onClick={() => onChange(null)}
             aria-label={`Remove ${previewAlt}`}
-            className="absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-full bg-black/60 text-white active:scale-95"
+            className="absolute right-2 top-2 flex h-11 w-11 items-center justify-center rounded-full bg-black/60 text-white active:scale-95"
           >
             ✕
           </button>

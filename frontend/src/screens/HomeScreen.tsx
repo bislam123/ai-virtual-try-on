@@ -109,7 +109,12 @@ export default function HomeScreen({
       {errorMessage && (
         <div className="flex items-start justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           <p>{errorMessage}</p>
-          <button type="button" onClick={onDismissError} aria-label="Dismiss" className="shrink-0 font-bold">
+          <button
+            type="button"
+            onClick={onDismissError}
+            aria-label="Dismiss"
+            className="flex h-11 w-11 shrink-0 items-center justify-center text-base font-bold"
+          >
             ✕
           </button>
         </div>
@@ -147,7 +152,7 @@ export default function HomeScreen({
               type="button"
               onClick={() => void handleAutoDetect()}
               disabled={extractionState.status === "loading"}
-              className="rounded-lg border border-dashed border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 disabled:opacity-60"
+              className="min-h-11 rounded-lg border border-dashed border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 disabled:opacity-60"
             >
               {extractionState.status === "loading" ? "Detecting..." : "✂ Auto-detect clothing in photo"}
             </button>
@@ -171,7 +176,7 @@ export default function HomeScreen({
                   key={opt.value}
                   type="button"
                   onClick={() => setCategory(opt.value)}
-                  className={`flex-1 rounded-lg border px-2 py-2 text-xs font-semibold transition ${
+                  className={`min-h-11 flex-1 rounded-lg border px-2 py-2 text-xs font-semibold transition ${
                     category === opt.value
                       ? "border-indigo-600 bg-indigo-600 text-white"
                       : "border-slate-200 bg-white text-slate-600"

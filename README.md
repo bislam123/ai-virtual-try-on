@@ -4,7 +4,7 @@ See how clothes look on you before you buy them — a mobile-first virtual try-o
 
 ## Status
 
-🚧 **Milestone 9 of 13** — see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full milestone plan and current progress.
+🚧 **Milestone 10 of 13** — see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full milestone plan and current progress.
 
 | Milestone | Status |
 |---|---|
@@ -17,7 +17,8 @@ See how clothes look on you before you buy them — a mobile-first virtual try-o
 | 7. Product image extraction | ✅ Done |
 | 8. Product URL support | ✅ Done |
 | 9. Browser extension | ✅ Done |
-| 10+ | ⬜ Not started |
+| 10. PWA / mobile optimization | ✅ Done |
+| 11+ | ⬜ Not started |
 
 ## Non-negotiables (see full brief for details)
 

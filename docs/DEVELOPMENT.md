@@ -13,7 +13,7 @@
 | 7 | Product image extraction | ✅ Done |
 | 8 | Product URL support | ✅ Done |
 | 9 | Browser extension | ✅ Done |
-| 10 | PWA / mobile optimization | ⬜ Not started |
+| 10 | PWA / mobile optimization | ✅ Done |
 | 11 | Usage limits & premium architecture | ⬜ Not started |
 | 12 | Payments / in-app purchases | ⬜ Not started |
 | 13 | Production deployment | ⬜ Not started |
@@ -265,3 +265,27 @@ Given the project's established pattern of using Playwright as an ad-hoc, docume
 - No `MutationObserver` — a single-page-app site that swaps in product content without a full navigation won't get re-detected. Real complexity not yet justified without evidence it's needed against real shopping sites.
 - Content script runs its (cheap) detection on every HTTP/HTTPS page visited, not a fixed shopping-site allowlist — a deliberate choice (the brief argues against assuming a fixed set of sites) but worth being upfront about, same as noted in the extension's own README.
 - `WEB_APP_URL` is a hardcoded constant (`http://localhost:5173`) with a `window.__AI_TRYON_WEB_APP_URL__` override hook — fine for local dev, needs a real build-time configuration story before packaging for an actual store listing (Milestone 13 territory).
+
+## Milestone 10 — PWA / mobile optimization
+
+Two threads: making the app genuinely installable (not just responsive — Milestone 4 already covered that), and auditing real mobile usability details that only show up once you go looking (touch target sizes, offline behavior).
+
+**Installability, via `vite-plugin-pwa`** (Workbox under the hood, generates the service worker rather than hand-rolling one): full icon set added (`frontend/public/icons/` — 192px and 512px `any`-purpose PNGs, a 512px `maskable` variant with content kept inside the ~80% safe zone so Android's adaptive-icon masking doesn't clip it, and a 180px `apple-touch-icon.png`, since iOS Safari doesn't use the web manifest for "Add to Home Screen" the way Android does — it needs its own icon + `apple-mobile-web-app-*` meta tags in `index.html`). The old hand-written static `public/manifest.json` was removed in favor of the plugin generating `manifest.webmanifest` from `vite.config.ts`'s config, so the manifest and the precached icon list can never drift apart.
+
+**Caching strategy — deliberately narrow:** the service worker precaches the app shell (JS/CSS/HTML/icons) for instant repeat loads and *some* offline capability, but `/api/*` is explicitly `NetworkOnly` (matched by path, not a hardcoded origin, since the backend can be same- or cross-origin depending on `VITE_API_BASE_URL`). This isn't a partial implementation of "cache the API too" — it's the correct end state: job status, results, and auth must always reflect the real server, and a stale cached AI result or job status would be actively misleading, not a helpful offline convenience. `useOnlineStatus.ts` (plain `navigator.onLine` + online/offline events, unrelated to the service worker's own lifecycle) drives a banner so a disconnected user gets an honest, clear message instead of the app just failing confusingly on the first API call.
+
+**Touch target audit — a real fix, not a formality:** went through every interactive element and measured against the 44px minimum (Apple HIG / WCAG 2.5.5) — several were genuinely too small: the photo-preview remove button (32px), several `text-xs` buttons with only `py-2` padding (~32-36px), and multiple icon-only/plain-text buttons with no padding at all (auth modal's close button, "Sign in"/"Sign out", the URL-paste toggle link). Fixed with a consistent `min-h-11` (44px) floor plus `flex items-center` where needed to actually center content in the enlarged hit area, not just pad it — this was verified computationally (see below), not eyeballed.
+
+**Verified, in order:**
+1. `npm run build` — confirmed `dist/sw.js`, `dist/workbox-*.js`, and `dist/manifest.webmanifest` are generated (15 precached entries, ~260KB); the generated manifest itself parsed and checked for all three required icon entries.
+2. Playwright against the **production build** served via `vite preview` (not `npm run dev` — a dev-mode service worker isn't representative of what actually ships): manifest link present and fetchable, all three icon files and the apple-touch-icon fetchable, `navigator.serviceWorker.ready` resolves with `active.state === "activated"`.
+3. A real, computational touch-target audit: filled in both photos so every conditional button (category picker, auto-detect) rendered, measured the bounding box of every visible button, asserted `height >= 44px` — caught real failures before the fix, passed cleanly after.
+4. Real offline behavior: loaded once online (letting the SW precache), then `context.setOffline(true)` and reloaded — the full app shell still rendered from cache, and the offline banner appeared. Screenshot confirms both together.
+5. Layout sanity at a small phone (360×640) and a tablet (768×1024) viewport — no horizontal overflow at either size.
+
+**What wasn't obtained: a Lighthouse PWA score.** Attempted (`npx lighthouse ... --only-categories=pwa`), but current Lighthouse has actually removed the standalone "pwa" category from automated scoring entirely (Google's own call — the PWA checklist moved to manual/DevTools-panel territory in recent versions), and a fallback run with `accessibility,best-practices` hit a Windows-specific `chrome-launcher` temp-directory cleanup permission error (`EPERM` on `rmSync`) unrelated to this app. Not chased further: every concrete criterion Lighthouse's old PWA category checked — valid manifest with correct icons, registered and active service worker, offline load — was already verified directly and more precisely above.
+
+**Known limitations, carried forward on purpose:**
+- No update-available UI — `registerType: 'autoUpdate'` means a new service worker version activates silently on the next load rather than prompting the user. Fine for this app's low deploy-frequency stage; a "New version available, refresh?" prompt (via `vite-plugin-pwa`'s `virtual:pwa-register` hooks) is a natural addition once deploys are frequent enough to matter.
+- Precaching is app-shell only — no attempt to make the actual try-on generation work offline (it fundamentally can't, per requirement: it needs the backend and the AI model), and the UI is honest about that via the offline banner rather than pretending otherwise.
+- Real device testing (an actual iPhone/Android phone, not just Chromium viewport emulation) hasn't been done — emulation covers layout/sizing but not every iOS Safari PWA quirk (e.g. its historically limited service-worker/storage guarantees). Worth doing before shipping, flagged rather than assumed away.

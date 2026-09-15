@@ -1,4 +1,6 @@
+import OfflineBanner from "./components/OfflineBanner";
 import { useAuth } from "./hooks/useAuth";
+import { useOnlineStatus } from "./hooks/useOnlineStatus";
 import { useTryOnFlow } from "./hooks/useTryOnFlow";
 import HomeScreen from "./screens/HomeScreen";
 import ProcessingScreen from "./screens/ProcessingScreen";
@@ -7,14 +9,14 @@ import ResultScreen from "./screens/ResultScreen";
 export default function App() {
   const auth = useAuth();
   const flow = useTryOnFlow();
+  const isOnline = useOnlineStatus();
   const { submission } = flow;
 
+  let screen;
   if (submission.status === "pending" || submission.status === "processing") {
-    return <ProcessingScreen status={submission.status} />;
-  }
-
-  if (submission.status === "completed" && flow.personImage) {
-    return (
+    screen = <ProcessingScreen status={submission.status} />;
+  } else if (submission.status === "completed" && flow.personImage) {
+    screen = (
       <ResultScreen
         personImage={flow.personImage}
         jobId={submission.jobId}
@@ -26,23 +28,30 @@ export default function App() {
         onChangeClothing={flow.changeClothing}
       />
     );
+  } else {
+    screen = (
+      <HomeScreen
+        personImage={flow.personImage}
+        setPersonImage={flow.setPersonImage}
+        garmentImage={flow.garmentImage}
+        setGarmentImage={flow.setGarmentImage}
+        category={flow.category}
+        setCategory={flow.setCategory}
+        errorMessage={submission.status === "failed" ? submission.message : null}
+        onDismissError={flow.dismissError}
+        onSubmit={() => void flow.submit(auth.token)}
+        user={auth.user}
+        onLogin={auth.login}
+        onSignup={auth.signup}
+        onLogout={auth.logout}
+      />
+    );
   }
 
   return (
-    <HomeScreen
-      personImage={flow.personImage}
-      setPersonImage={flow.setPersonImage}
-      garmentImage={flow.garmentImage}
-      setGarmentImage={flow.setGarmentImage}
-      category={flow.category}
-      setCategory={flow.setCategory}
-      errorMessage={submission.status === "failed" ? submission.message : null}
-      onDismissError={flow.dismissError}
-      onSubmit={() => void flow.submit(auth.token)}
-      user={auth.user}
-      onLogin={auth.login}
-      onSignup={auth.signup}
-      onLogout={auth.logout}
-    />
+    <>
+      {!isOnline && <OfflineBanner />}
+      {screen}
+    </>
   );
 }

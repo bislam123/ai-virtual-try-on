@@ -13,16 +13,24 @@ export default function AuthBar({ user, onLogin, onSignup, onLogout }: AuthBarPr
   const [showModal, setShowModal] = useState(false);
 
   return (
-    <div className="flex justify-end text-sm">
+    <div className="flex min-h-11 items-center justify-end text-sm">
       {user ? (
         <div className="flex items-center gap-2 text-slate-500">
           <span className="truncate max-w-[160px]">{user.email}</span>
-          <button type="button" onClick={onLogout} className="font-semibold text-indigo-600">
+          <button
+            type="button"
+            onClick={onLogout}
+            className="flex min-h-11 items-center font-semibold text-indigo-600"
+          >
             Sign out
           </button>
         </div>
       ) : (
-        <button type="button" onClick={() => setShowModal(true)} className="font-semibold text-indigo-600">
+        <button
+          type="button"
+          onClick={() => setShowModal(true)}
+          className="flex min-h-11 items-center font-semibold text-indigo-600"
+        >
           Sign in
         </button>
       )}
