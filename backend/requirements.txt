@@ -1,0 +1,9 @@
+# Installed into the same venv as ai/ (ai/.venv) — this backend calls the AI
+# pipeline in-process, so it needs everything ai/ needs (torch, fashn-vton,
+# aitryon-bodyparser) plus the web-framework packages below. See
+# docs/DEVELOPMENT.md for why they currently share one environment, and when
+# that would need to split (e.g. backend and AI inference on different hosts).
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+pydantic-settings>=2.4

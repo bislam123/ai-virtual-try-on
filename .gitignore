@@ -17,14 +17,20 @@ huggingface_cache/
 *.ckpt
 
 # User-uploaded / generated images (never commit real user content)
-backend/storage/uploads/
-backend/storage/results/
-backend/storage/tmp/
+backend/storage/uploads/*
+backend/storage/results/*
+backend/storage/tmp/*
+!backend/storage/uploads/.gitkeep
+!backend/storage/results/.gitkeep
+!backend/storage/tmp/.gitkeep
 *.jpg
 *.jpeg
 *.png
 !frontend/public/**
 !docs/**/*.png
+
+# Test artifacts
+.pytest_cache/
 
 # Node / frontend
 node_modules/

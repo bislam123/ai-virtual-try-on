@@ -39,6 +39,10 @@ User → Account → Plan (free/premium) → Usage quota (per day/month) → AI 
 
 This will be built out starting at Milestone 6 (accounts) and Milestone 11 (usage limits). No payment integration exists yet, per the brief.
 
+## API layer: jobs, not synchronous requests
+
+`POST /api/try-on` returns a `job_id` immediately (202) instead of blocking until an image is generated. This isn't premature complexity — on the CPU-only dev machine a generation takes 10-70+ minutes, and even on a production GPU it will take seconds, well past what's comfortable to hold an HTTP request open for. The client polls `GET /api/try-on/{job_id}` and fetches `GET /api/try-on/{job_id}/result` once complete. Job state currently lives in an in-memory `JobStore` (single dev process only) behind a small interface — swapping it for a real table happens naturally alongside Milestone 6's database, without changing this contract.
+
 ## Storage abstraction
 
 All file I/O (user photos, garment images, results) goes through a storage service interface, not direct filesystem calls, so local disk (dev) can be swapped for object storage (production) later without touching business logic. Built starting Milestone 3/6.

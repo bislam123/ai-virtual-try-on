@@ -5,8 +5,8 @@
 | # | Milestone | Status |
 |---|---|---|
 | 1 | Hardware & AI model evaluation | ✅ Done |
-| 2 | AI model installation & first test inference | 🚧 In progress |
-| 3 | AI inference FastAPI service (`POST /api/try-on`) | ⬜ Not started |
+| 2 | AI model installation & first test inference | ✅ Done |
+| 3 | AI inference FastAPI service (`POST /api/try-on`) | ✅ Done |
 | 4 | Mobile-first web UI | ⬜ Not started |
 | 5 | Connect frontend to AI backend | ⬜ Not started |
 | 6 | User accounts & secure image handling | ⬜ Not started |
@@ -62,6 +62,44 @@ cd "ai"
 
 Uses fashn-vton-1.5's own bundled example images (a person photo + a garment photo) and writes `ai/outputs/milestone2_first_tryon.png`. Expect this to be slow — this machine has no GPU; see the script's timing output for the actual measured figure once it's run to completion.
 
-## Known limitation carried into Milestone 3
+## Known limitation carried forward from Milestone 2
 
-`aitryon_bodyparser.PlaceholderBodyParser` always returns "background" — it is not a real segmentation model. It's provably safe only when the pipeline runs with `segmentation_free=True` and `garment_photo_type="flat-lay"` (our actual MVP scenario: a person photo + a plain clothing/product photo). Before we support masked mode or "garment worn by another person" product photos, it must be replaced with a real commercially-licensed segmentation model. Candidates and why: see [AI_MODEL_LICENSE.md](AI_MODEL_LICENSE.md).
+`aitryon_bodyparser.PlaceholderBodyParser` always returns "background" — it is not a real segmentation model. It's provably safe only when the pipeline runs with `segmentation_free=True` and `garment_photo_type="flat-lay"` (our actual MVP scenario: a person photo + a plain clothing/product photo). The backend API enforces this — see Milestone 3 below. Before we support masked mode or "garment worn by another person" product photos, it must be replaced with a real commercially-licensed segmentation model. Candidates and why: see [AI_MODEL_LICENSE.md](AI_MODEL_LICENSE.md).
+
+## Milestone 3 — AI inference FastAPI service
+
+`backend/` is a FastAPI app that wraps the AI pipeline behind `POST /api/try-on`. It runs in the same venv as `ai/` (`ai/.venv`) since it calls the pipeline in-process — see `backend/requirements.txt` for why, and when that would need to split.
+
+**Install (adds to the same venv):**
+```powershell
+ai\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
+ai\.venv\Scripts\python.exe -m pip install pytest httpx   # test-only deps
+```
+
+**Run the server:**
+```powershell
+ai\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --reload
+```
+Loads the real model at startup (~7s) — a missing/corrupt `ai/models/fashn-vton-1.5` fails loudly at boot, not on a user's first request.
+
+**Run tests** (fast — uses a fake provider, no real inference; run from the project root):
+```powershell
+ai\.venv\Scripts\python.exe -m pytest -v
+```
+
+**API:**
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/try-on` | multipart form: `person_image`, `garment_image` (JPEG/PNG/WebP, ≤10MB, ≤4096px), `category` (`tops`\|`bottoms`\|`one-pieces`), optional `num_timesteps`/`seed`. Returns `202 {job_id, status}` immediately — generation runs in the background (this is not optional: on this CPU-only dev machine a job takes 10-70+ minutes depending on step count, so the request must not block). `garment_photo_type` other than the default `"flat-lay"` is rejected with a clear message — see the known limitation above. |
+| `GET /api/try-on/{job_id}` | `{status: pending\|processing\|completed\|failed, error, result_url}`. Poll this. |
+| `GET /api/try-on/{job_id}/result` | The generated PNG, once `status == completed`. |
+
+**Verified working, twice:**
+1. Full test suite (`pytest`, fake provider) — validation, job lifecycle, error handling, rate limiting, 404s, provider-failure-doesn't-leak-internals — all pass in ~1s.
+2. A real end-to-end run through the actual running server (real model, `num_timesteps=4` for a faster ~13-minute check) — submit → poll (server stayed responsive to every poll throughout, confirming the background-task design works) → fetch result → confirmed temp uploads were deleted and the result PNG persisted.
+
+**Known limitations, carried forward on purpose (not oversights):**
+- Job state is in-memory (`JobStore`) — doesn't survive a restart, doesn't work across multiple worker processes. Real fix arrives with the database in Milestone 6; kept behind a small interface so that swap doesn't touch the API layer.
+- Rate limiting is a per-IP in-memory fixed window (abuse protection only) — real per-user/per-plan quotas need accounts + a database (Milestone 11).
+- No auth yet — anyone who can reach the API can submit jobs. Fine for local dev; must not ship publicly before Milestone 6.

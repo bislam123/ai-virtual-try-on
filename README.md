@@ -4,13 +4,13 @@ See how clothes look on you before you buy them — a mobile-first virtual try-o
 
 ## Status
 
-🚧 **Milestone 2 of 13** — see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full milestone plan and current progress.
+🚧 **Milestone 3 of 13** — see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full milestone plan and current progress.
 
 | Milestone | Status |
 |---|---|
 | 1. Hardware & AI model evaluation | ✅ Done — see [docs/AI_MODEL_LICENSE.md](docs/AI_MODEL_LICENSE.md) |
-| 2. AI model installation & first test inference | 🚧 In progress |
-| 3. AI inference FastAPI service | ⬜ Not started |
+| 2. AI model installation & first test inference | ✅ Done |
+| 3. AI inference FastAPI service (`POST /api/try-on`) | ✅ Done |
 | 4. Mobile-first web UI | ⬜ Not started |
 | 5+ | ⬜ Not started |
 
