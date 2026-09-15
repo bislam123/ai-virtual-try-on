@@ -14,4 +14,5 @@ export interface TryOnJobStatusResponse {
   created_at: string;
   updated_at: string;
   result_url: string | null;
+  saved: boolean;
 }

@@ -1,11 +1,14 @@
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
+from ..auth.dependencies import get_current_user_optional, get_current_user_required
 from ..config import settings
 from ..core.errors import UserFacingError
 from ..core.validation import validate_and_load_image
+from ..db import User
 from ..models.schemas import TryOnJobCreated, TryOnJobStatusResponse
 from ..services.job_store import JobStatus
 from ..services.rate_limiter import RateLimiter
@@ -37,8 +40,13 @@ async def create_try_on_job(
     seed: int = Form(42),
     service: TryOnService = Depends(get_tryon_service),
     limiter: RateLimiter = Depends(get_rate_limiter),
+    user: Optional[User] = Depends(get_current_user_optional),
 ):
-    client_key = request.client.host if request.client else "unknown"
+    # Signing in is entirely optional here (brief: don't force an account
+    # before the core flow works) — an authenticated request just gets its
+    # job attributed to that account, enabling the /save endpoint below, and
+    # a fairer per-user rate limit key instead of per-IP.
+    client_key = f"user:{user.id}" if user else f"ip:{request.client.host if request.client else 'unknown'}"
     limit_result = limiter.check(client_key)
     if not limit_result.allowed:
         raise HTTPException(
@@ -75,6 +83,7 @@ async def create_try_on_job(
         num_timesteps=clamped_steps,
         guidance_scale=settings.default_guidance_scale,
         seed=seed,
+        user_id=user.id if user else None,
     )
     background_tasks.add_task(service.run_job, job.id)
 
@@ -95,6 +104,7 @@ async def get_try_on_job(job_id: str, service: TryOnService = Depends(get_tryon_
         created_at=job.created_at,
         updated_at=job.updated_at,
         result_url=result_url,
+        saved=job.saved,
     )
 
 
@@ -111,3 +121,27 @@ async def get_try_on_result(job_id: str, service: TryOnService = Depends(get_try
         raise HTTPException(status_code=404, detail="The result image is no longer available.")
 
     return FileResponse(result_path, media_type="image/png")
+
+
+@router.post("/{job_id}/save", response_model=TryOnJobStatusResponse)
+async def save_try_on_result(
+    job_id: str,
+    service: TryOnService = Depends(get_tryon_service),
+    user: User = Depends(get_current_user_required),
+):
+    """Explicitly keep a result past the unsaved-result TTL (see
+    backend/scripts/cleanup_expired_results.py) by attaching it to the
+    signed-in user's account. Requires auth — that's the point of the
+    feature, not a violation of "don't force an account for the MVP": the
+    base generate/view/download-to-device flow above never requires it.
+    """
+    job = service.save_job(job_id, user.id)
+    return TryOnJobStatusResponse(
+        job_id=job.id,
+        status=job.status,
+        error=job.error,
+        created_at=job.created_at,
+        updated_at=job.updated_at,
+        result_url=f"/api/try-on/{job_id}/result",
+        saved=job.saved,
+    )

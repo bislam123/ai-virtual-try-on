@@ -9,7 +9,7 @@
 | 3 | AI inference FastAPI service (`POST /api/try-on`) | ✅ Done |
 | 4 | Mobile-first web UI | ✅ Done |
 | 5 | Connect frontend to AI backend | ✅ Done as part of Milestone 4 — the frontend calls the real `/api/try-on` from the start, not mock data |
-| 6 | User accounts & secure image handling | ⬜ Not started |
+| 6 | User accounts & secure image handling | ✅ Done |
 | 7 | Product image extraction | ⬜ Not started |
 | 8 | Product URL support | ⬜ Not started |
 | 9 | Browser extension | ⬜ Not started |
@@ -99,11 +99,11 @@ ai\.venv\Scripts\python.exe -m pytest -v
 1. Full test suite (`pytest`, fake provider) — validation, job lifecycle, error handling, rate limiting, 404s, provider-failure-doesn't-leak-internals — all pass in ~1s.
 2. A real end-to-end run through the actual running server (real model, `num_timesteps=4` for a faster ~13-minute check) — submit → poll (server stayed responsive to every poll throughout, confirming the background-task design works) → fetch result → confirmed temp uploads were deleted and the result PNG persisted.
 
-**Known limitations, carried forward on purpose (not oversights):**
-- Job state is in-memory (`JobStore`) — doesn't survive a restart, doesn't work across multiple worker processes. Real fix arrives with the database in Milestone 6; kept behind a small interface so that swap doesn't touch the API layer.
-- Rate limiting is a per-IP in-memory fixed window (abuse protection only) — real per-user/per-plan quotas need accounts + a database (Milestone 11).
-- No auth yet — anyone who can reach the API can submit jobs. Fine for local dev; must not ship publicly before Milestone 6.
-- Temp upload cleanup runs in a `finally` block, so it's skipped if the process is killed mid-job (observed while smoke-testing Milestone 4: force-stopping the server mid-inference left one job's temp files behind, since the whole process died before `finally` could run). Not a bug in the happy/failure path — a real gap for a hard crash/restart. A periodic sweep of orphaned `backend/storage/tmp/*` dirs on startup would close it; worth doing alongside Milestone 6's other hardening.
+**Known limitations at the time, since addressed by Milestone 6 (noted here for history, not left stale):**
+- ~~Job state is in-memory~~ → `DbJobStore` (Postgres) is now what `app/main.py` wires up; `InMemoryJobStore` still exists and is still what the fast test suite uses.
+- ~~No auth~~ → optional JWT auth exists; still true that the core flow never requires it, by design.
+- Rate limiting is still a per-IP (or per-user, if signed in) in-memory fixed window (abuse protection only) — real per-plan quotas still need Milestone 11.
+- Temp upload cleanup running in a `finally` block (skipped on a hard process kill) is still a real gap — see Milestone 6's section below for the closely-related result-image TTL story.
 
 ## Milestone 4 — Mobile-first web UI
 
@@ -126,7 +126,7 @@ Needs the backend running too (see Milestone 3 above) — the app calls it direc
 | `src/components/PhotoPicker.tsx` | Shared camera/gallery picker; "Take Your Photo" uses `capture="user"` to jump straight to the camera on mobile, "Choose Your Photo"/"Upload Clothing" omit it so the OS offers camera+gallery+files |
 | `src/utils/resultActions.ts` | Save (blob download — works cross-origin, unlike a plain `<a download>` on a cross-origin URL) and Share (Web Share API with a file, falling back to download where unsupported, e.g. most desktop browsers) |
 
-**Deliberately not built yet** (later milestones per the brief): "Paste Product URL" (Milestone 8 — the backend has no URL extraction to call), accounts/login (Milestone 6 — brief says don't force accounts before the MVP works), full PWA installability (Milestone 10).
+**Deliberately not built yet** (later milestones per the brief): "Paste Product URL" (Milestone 8 — the backend has no URL extraction to call), full PWA installability (Milestone 10). Accounts/login shipped in Milestone 6, below — still entirely optional, never forced.
 
 **Verified, not just written** — `npm run build` and `npm run lint` both clean, then a headless-Chromium pass (Playwright, 390×844 mobile viewport, no project `run` skill existed yet so this used the generic browser-driven pattern) against the actual running frontend+backend:
 - Home screen renders correctly at mobile width, matches the brief's wireframe (screenshot below)
@@ -138,3 +138,48 @@ Needs the backend running too (see Milestone 3 above) — the app calls it direc
 ![Home screen, filled in](../frontend/docs-assets/home_screen_filled.png)
 
 **Known gap:** killing the dev server mid-job (as happened once while smoke-testing) leaves that job's temp files behind — same root cause as the backend gap noted above.
+
+## Milestone 6 — User accounts & secure image handling
+
+Real persistence (PostgreSQL + SQLAlchemy + Alembic) and optional accounts (JWT auth). See [ARCHITECTURE.md](ARCHITECTURE.md#accounts--auth-milestone-6) for the design, [ENVIRONMENT.md](ENVIRONMENT.md) for what got installed.
+
+**One-time setup (already done on this machine, documented for a fresh one):**
+```powershell
+winget install --id PostgreSQL.PostgreSQL.17 -e --silent --accept-package-agreements --accept-source-agreements --override "--mode unattended --superpassword devpassword --servicename postgresql-x64-17 --serverport 5432"
+$env:PGPASSWORD = "devpassword"
+& "C:\Program Files\PostgreSQL\17\bin\psql.exe" -U postgres -h localhost -c "CREATE DATABASE aitryon;"
+
+ai\.venv\Scripts\python.exe -m pip install sqlalchemy alembic psycopg2-binary bcrypt pyjwt email-validator
+```
+
+**Every time you pull schema changes:**
+```powershell
+cd backend
+..\ai\.venv\Scripts\python.exe -m alembic upgrade head
+```
+
+**New endpoints:**
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `POST /api/auth/signup` | — | `{email, password}` → `{access_token}` |
+| `POST /api/auth/login` | — | Same response shape. Wrong password and unknown email return the *identical* message/status, so a login attempt can't be used to enumerate registered emails |
+| `GET /api/auth/me` | required | Current user's `{id, email, plan, created_at}` |
+| `POST /api/try-on` | optional | Unchanged contract — an `Authorization: Bearer` header just attributes the job to that user |
+| `POST /api/try-on/{job_id}/save` | required | Marks a completed job `saved` (exempt from the TTL cleanup below). Only the job's own creator can call this — 403 for anyone else, 403 for an anonymous job even from a now-signed-in user (no retroactive claiming) |
+
+**Frontend:** `useAuth.ts` (token in `localStorage`, wrapped in try/catch — see the hook for why), `AuthBar`/`AuthModal` components (a small "Sign in" link on the home screen, not a gate on anything), and `ResultScreen`'s new "Save to my account" button, shown only when signed in, alongside the pre-existing device "Save".
+
+**A real bug caught mid-build, not shipped:** the first migration had no `ON DELETE` behavior on `jobs.user_id`, so deleting a user with existing jobs would have failed with a foreign-key violation. Caught while writing the *test cleanup fixture* (deleting a test user after a test that created a job for them failed) — fixed by adding `ondelete="CASCADE"` to the FK (and a SQLAlchemy naming convention on `Base.metadata`, since the fix also surfaced that Alembic can't autogenerate a migration for an unnamed constraint). Migration history was reset once, cleanly, since this was still pre-any-real-data.
+
+**Verified, in order:**
+1. `pytest` — 8 pre-existing tests (unaffected, still DB-free) + 9 new tests in `tests/test_auth_api.py` (signup, duplicate-email rejection, login success/failure with the identical-message check, `/me`, save-by-owner, save-requires-auth, can't-save-someone-else's-or-an-anonymous-job, save-unknown-job). The new file auto-skips (not fails) if Postgres isn't reachable, so the suite stays runnable without it.
+2. The real running server: signup → login → `/me` → duplicate signup (409) → wrong password (401, identical message to unknown-email) — all via `curl`.
+3. A real authenticated generation (`num_timesteps=4`, real model) through to `/save`, then confirmed a second account gets 403 trying to save the same job.
+4. Playwright against the real frontend+backend: opened the sign-in modal, switched to sign-up, created an account, confirmed the header updates to show the signed-in email — zero console errors.
+5. Confirmed the `ON DELETE CASCADE` fix for real: deleting a test user whose job was still in the database succeeded and took the job row with it (checked in `psql` before and after).
+
+**Known limitations, carried forward on purpose:**
+- `backend/scripts/cleanup_expired_results.py` (the "unsaved images are temporary" enforcement) exists and works but isn't wired to a scheduler yet — needs real infra (cron/Task Scheduler/hosted cron), out of scope for this milestone.
+- Account deletion isn't a feature yet (no endpoint) — the cascade behavior is in place for when it is.
+- `plan` is a free-text column defaulting to `"free"`; nothing reads or enforces it yet (Milestone 11).

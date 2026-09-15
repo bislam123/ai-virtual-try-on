@@ -1,4 +1,6 @@
+import AuthBar from "../components/AuthBar";
 import PhotoPicker from "../components/PhotoPicker";
+import type { UserResponse } from "../types/auth";
 import type { GarmentCategory } from "../types/tryOn";
 
 const CATEGORY_OPTIONS: { value: GarmentCategory; label: string }[] = [
@@ -17,6 +19,10 @@ interface HomeScreenProps {
   errorMessage: string | null;
   onDismissError: () => void;
   onSubmit: () => void;
+  user: UserResponse | null;
+  onLogin: (email: string, password: string) => Promise<void>;
+  onSignup: (email: string, password: string) => Promise<void>;
+  onLogout: () => void;
 }
 
 export default function HomeScreen({
@@ -29,11 +35,17 @@ export default function HomeScreen({
   errorMessage,
   onDismissError,
   onSubmit,
+  user,
+  onLogin,
+  onSignup,
+  onLogout,
 }: HomeScreenProps) {
   const canSubmit = personImage !== null && garmentImage !== null;
 
   return (
     <div className="mx-auto flex min-h-screen max-w-md flex-col gap-6 px-4 pb-10 pt-8">
+      <AuthBar user={user} onLogin={onLogin} onSignup={onSignup} onLogout={onLogout} />
+
       <header className="text-center">
         <h1 className="text-3xl font-bold text-slate-900">✨ Try It On</h1>
         <p className="mt-1 text-sm text-slate-500">See how clothes look on you</p>

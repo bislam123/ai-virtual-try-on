@@ -7,7 +7,7 @@ const POLL_INTERVAL_MS = 4000;
 type Submission =
   | { status: "idle" }
   | { status: "pending" | "processing"; jobId: string }
-  | { status: "completed"; jobId: string; resultUrl: string }
+  | { status: "completed"; jobId: string; resultUrl: string; saved: boolean }
   | { status: "failed"; message: string };
 
 export function useTryOnFlow() {
@@ -30,7 +30,7 @@ export function useTryOnFlow() {
         try {
           const status = await getJobStatus(jobId);
           if (status.status === "completed") {
-            setSubmission({ status: "completed", jobId, resultUrl: getResultImageUrl(jobId) });
+            setSubmission({ status: "completed", jobId, resultUrl: getResultImageUrl(jobId), saved: status.saved });
             return;
           }
           if (status.status === "failed") {
@@ -54,34 +54,49 @@ export function useTryOnFlow() {
     [],
   );
 
-  const submit = useCallback(async () => {
-    if (!personImage || !garmentImage) return;
-    setSubmission({ status: "pending", jobId: "" });
-    try {
-      const created = await submitTryOnJob(personImage, garmentImage, category);
-      // In practice the backend always returns "pending" here — jobs run in
-      // the background, not synchronously — but narrow properly rather than
-      // assume, so this stays correct if that ever changes.
-      if (created.status === "failed") {
-        setSubmission({ status: "failed", message: "We couldn't generate your try-on result. Please try again." });
-        return;
+  const submit = useCallback(
+    async (token?: string | null) => {
+      if (!personImage || !garmentImage) return;
+      setSubmission({ status: "pending", jobId: "" });
+      try {
+        // Signing in is optional — an anonymous submission works exactly as
+        // before. An authenticated one just gets attributed to that account,
+        // which is what enables "Save to my account" on the result screen.
+        const created = await submitTryOnJob(personImage, garmentImage, category, token);
+        // In practice the backend always returns "pending" here — jobs run in
+        // the background, not synchronously — but narrow properly rather than
+        // assume, so this stays correct if that ever changes.
+        if (created.status === "failed") {
+          setSubmission({ status: "failed", message: "We couldn't generate your try-on result. Please try again." });
+          return;
+        }
+        if (created.status === "completed") {
+          setSubmission({
+            status: "completed",
+            jobId: created.job_id,
+            resultUrl: getResultImageUrl(created.job_id),
+            saved: false,
+          });
+          return;
+        }
+        setSubmission({ status: created.status, jobId: created.job_id });
+        poll(created.job_id);
+      } catch (err) {
+        setSubmission({
+          status: "failed",
+          message: err instanceof ApiError ? err.message : "Something went wrong. Please try again.",
+        });
       }
-      if (created.status === "completed") {
-        setSubmission({ status: "completed", jobId: created.job_id, resultUrl: getResultImageUrl(created.job_id) });
-        return;
-      }
-      setSubmission({ status: created.status, jobId: created.job_id });
-      poll(created.job_id);
-    } catch (err) {
-      setSubmission({
-        status: "failed",
-        message: err instanceof ApiError ? err.message : "Something went wrong. Please try again.",
-      });
-    }
-  }, [personImage, garmentImage, category, poll]);
+    },
+    [personImage, garmentImage, category, poll],
+  );
 
   const dismissError = useCallback(() => {
     setSubmission({ status: "idle" });
+  }, []);
+
+  const markSaved = useCallback(() => {
+    setSubmission((prev) => (prev.status === "completed" ? { ...prev, saved: true } : prev));
   }, []);
 
   const tryAnother = useCallback(() => {
@@ -108,6 +123,7 @@ export function useTryOnFlow() {
     submission,
     submit,
     dismissError,
+    markSaved,
     tryAnother,
     changeClothing,
   };

@@ -4,7 +4,7 @@ See how clothes look on you before you buy them — a mobile-first virtual try-o
 
 ## Status
 
-🚧 **Milestone 4 of 13** — see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full milestone plan and current progress.
+🚧 **Milestone 6 of 13** — see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full milestone plan and current progress.
 
 | Milestone | Status |
 |---|---|
@@ -13,7 +13,8 @@ See how clothes look on you before you buy them — a mobile-first virtual try-o
 | 3. AI inference FastAPI service (`POST /api/try-on`) | ✅ Done |
 | 4. Mobile-first web UI | ✅ Done |
 | 5. Connect frontend to AI backend | ✅ Done as part of Milestone 4 (frontend already calls the real API) |
-| 6+ | ⬜ Not started |
+| 6. User accounts & secure image handling | ✅ Done |
+| 7+ | ⬜ Not started |
 
 ## Non-negotiables (see full brief for details)
 
@@ -40,3 +41,4 @@ ai-try-on/
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — system design, provider abstractions
 - [docs/AI_MODEL_LICENSE.md](docs/AI_MODEL_LICENSE.md) — which AI models are used and why each is commercially safe
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — environment setup, milestone plan, exact commands
+- [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md) — installed software, hardware, full environment variable reference

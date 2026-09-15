@@ -18,7 +18,7 @@ from PIL import Image
 from backend.app.api import tryon as tryon_module
 from backend.app.core.errors import configure_exception_handlers
 from backend.app.providers.base import TryOnRequest, TryOnResult, VirtualTryOnProvider
-from backend.app.services.job_store import JobStore
+from backend.app.services.job_store import InMemoryJobStore
 from backend.app.services.rate_limiter import RateLimiter
 from backend.app.services.storage import LocalStorageService
 from backend.app.services.tryon_service import TryOnService
@@ -43,7 +43,7 @@ def make_test_app(tmp_path, provider=None, rate_limit=1000):
     app.state.tryon_service = TryOnService(
         provider=provider or FakeProvider(),
         storage=LocalStorageService(str(tmp_path)),
-        job_store=JobStore(),
+        job_store=InMemoryJobStore(),
     )
     app.state.rate_limiter = RateLimiter(max_requests=rate_limit, window_seconds=3600)
     return app

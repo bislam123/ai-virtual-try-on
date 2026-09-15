@@ -43,5 +43,24 @@ class Settings(BaseSettings):
     # --- CORS (frontend origins allowed to call this API) ---
     cors_origins: List[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
+    # --- Database ---
+    # Local dev default matches docs/DEVELOPMENT.md's PostgreSQL setup steps.
+    # A real deployment must override this (and jwt_secret_key) via env vars —
+    # never trust these defaults outside a local dev machine.
+    database_url: str = "postgresql+psycopg2://postgres:devpassword@localhost:5432/aitryon"
+
+    # --- Auth ---
+    # Accounts are optional everywhere they can be (brief: "Do not force
+    # users to create an account before testing the basic MVP"). This secret
+    # signs JWT access tokens; MUST be overridden outside local dev.
+    jwt_secret_key: str = "dev-only-insecure-secret-change-me"
+    jwt_algorithm: str = "HS256"
+    jwt_expire_minutes: int = 60 * 24 * 7  # 7 days
+
+    # How long a completed job's result image is kept if the user never
+    # explicitly saves it to their account (privacy requirement: temporary by
+    # default). Enforced by backend/scripts/cleanup_expired_results.py.
+    unsaved_result_ttl_hours: int = 24
+
 
 settings = Settings()

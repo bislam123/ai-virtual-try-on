@@ -1,9 +1,11 @@
+import { useAuth } from "./hooks/useAuth";
 import { useTryOnFlow } from "./hooks/useTryOnFlow";
 import HomeScreen from "./screens/HomeScreen";
 import ProcessingScreen from "./screens/ProcessingScreen";
 import ResultScreen from "./screens/ResultScreen";
 
 export default function App() {
+  const auth = useAuth();
   const flow = useTryOnFlow();
   const { submission } = flow;
 
@@ -15,7 +17,11 @@ export default function App() {
     return (
       <ResultScreen
         personImage={flow.personImage}
+        jobId={submission.jobId}
         resultUrl={submission.resultUrl}
+        saved={submission.saved}
+        authToken={auth.token}
+        onSaved={flow.markSaved}
         onTryAnother={flow.tryAnother}
         onChangeClothing={flow.changeClothing}
       />
@@ -32,7 +38,11 @@ export default function App() {
       setCategory={flow.setCategory}
       errorMessage={submission.status === "failed" ? submission.message : null}
       onDismissError={flow.dismissError}
-      onSubmit={() => void flow.submit()}
+      onSubmit={() => void flow.submit(auth.token)}
+      user={auth.user}
+      onLogin={auth.login}
+      onSignup={auth.signup}
+      onLogout={auth.logout}
     />
   );
 }
