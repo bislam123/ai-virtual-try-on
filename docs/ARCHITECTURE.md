@@ -76,6 +76,24 @@ Same "no vendor lock-in" shape as the AI provider above, applied to a different 
 
 Unlike `/api/try-on`, this endpoint is **synchronous** — classical CV runs in milliseconds on this CPU, so the job/poll pattern (which exists specifically because of the AI model's cost) would be pure overhead here. Not every backend endpoint follows the same shape; the shape follows the actual cost of the work.
 
+### Method A: product URL (Milestone 8)
+
+```
+ExtractionService.extract_from_url(url)
+    ↓
+ProductPageFetcher  (interface, fetchers/base.py)
+    ↓
+HttpProductPageFetcher
+    ↓ ssrf_guard.assert_safe_url()  -- before the initial request AND every redirect hop
+    ↓ robots.txt check
+    ↓ fetch page, parse JSON-LD Product schema / Open Graph tags
+    ↓ fetch the found image
+    ↓
+same SaliencyProductExtractor as Method B/C
+```
+
+`POST /api/extract-product-url` accepts a URL, not a file — everything downstream is identical to Method B/C, which is the point of keeping "how do we get an image" (`fetchers/`) separate from "find the product within an image" (`extractors/`). A URL-fetching feature that accepts arbitrary user input is a real SSRF surface — `fetchers/ssrf_guard.py` is the load-bearing security control here (blocks private/loopback/link-local/reserved IP ranges after DNS resolution, re-checked on every redirect, not just the first hop), and it's documented with its own known limitation (check-then-connect, not immune to DNS rebinding) rather than presented as airtight. Never bypasses robots.txt, auth, paywalls, or CAPTCHAs (brief section 7) — any of those, or simply finding no product image, surfaces as the same kind of clear, fallback-pointing error as every other failure mode in this codebase (section 25).
+
 ## Storage abstraction
 
 All file I/O (user photos, garment images, results) goes through a `StorageService` interface (`LocalStorageService` today), not direct filesystem calls, so local disk (dev) can be swapped for object storage (production) later without touching business logic. Since Milestone 6, temp uploads are written under a deterministic path (`tmp/{job_id}/{person,garment}.png`) rather than kept only as in-memory Python objects — necessary once job state can outlive the process that created it (a `DbJobStore`-backed job, picked up after a restart, must be able to find its own inputs from the job record alone).

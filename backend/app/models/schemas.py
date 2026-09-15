@@ -45,3 +45,11 @@ class TryOnJobStatusResponse(BaseModel):
 
 class ErrorResponse(BaseModel):
     detail: str
+
+
+class ExtractProductUrlRequest(BaseModel):
+    # A plain `str`, not pydantic's `HttpUrl` — HttpUrl normalizes/reformats
+    # the value (and rejects things like a bare IP a bit differently than we
+    # want), and fetchers/ssrf_guard.py is the actual authority on whether a
+    # URL is safe to fetch, not this schema. This just requires *a* string.
+    url: str = Field(min_length=1, max_length=2048)

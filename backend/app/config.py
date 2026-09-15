@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     extraction_rate_limit_max_requests: int = 60
     extraction_rate_limit_window_seconds: int = 600
 
+    # Product URL extraction (Milestone 8) makes an outbound request to a
+    # site the caller chooses — tighter than the pure-image endpoint above,
+    # since it's also a lever for pointing our server at arbitrary hosts
+    # (mitigated by fetchers/ssrf_guard.py, but still worth rate-limiting
+    # more conservatively than a purely local operation).
+    url_extraction_rate_limit_max_requests: int = 20
+    url_extraction_rate_limit_window_seconds: int = 600
+
     # --- CORS (frontend origins allowed to call this API) ---
     cors_origins: List[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 

@@ -34,6 +34,9 @@ async def lifespan(app: FastAPI):
     app.state.extraction_rate_limiter = RateLimiter(
         settings.extraction_rate_limit_max_requests, settings.extraction_rate_limit_window_seconds
     )
+    app.state.url_extraction_rate_limiter = RateLimiter(
+        settings.url_extraction_rate_limit_max_requests, settings.url_extraction_rate_limit_window_seconds
+    )
     logger.info("AI Try-On backend ready.")
     yield
 

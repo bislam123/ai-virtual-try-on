@@ -11,7 +11,7 @@
 | 5 | Connect frontend to AI backend | ✅ Done as part of Milestone 4 — the frontend calls the real `/api/try-on` from the start, not mock data |
 | 6 | User accounts & secure image handling | ✅ Done |
 | 7 | Product image extraction | ✅ Done |
-| 8 | Product URL support | ⬜ Not started |
+| 8 | Product URL support | ✅ Done |
 | 9 | Browser extension | ⬜ Not started |
 | 10 | PWA / mobile optimization | ⬜ Not started |
 | 11 | Usage limits & premium architecture | ⬜ Not started |
@@ -215,3 +215,30 @@ ai\.venv\Scripts\python.exe -m pip install -e product-extractor
 - Tuned against two synthetic test images, not a corpus of real shopping-site screenshots (none exist yet in this project). The dominance-ratio approach should generalize reasonably, but the exact thresholds (`_MIN_DOMINANCE`, `_MIN_AREA_RATIO`, `_MAX_AREA_RATIO`) are first-pass estimates, flagged as such in the code, and worth revisiting once real usage data exists.
 - Only finds one candidate region. A screenshot with multiple product thumbnails (e.g. a search results grid) would currently just get the single most dominant one — reasonable for a single-product page, not yet handled for a listing page.
 - Not wired into the try-on submission flow automatically — it's an optional button the user chooses to press, not a preprocessing step forced on every upload.
+
+## Milestone 8 — Product URL support (brief section 7, Method A)
+
+Given a product page link, fetch it and find its product image — reusing Milestone 7's `ExtractionService`/`SaliencyProductExtractor` unchanged for the actual cropping. New pieces live in `product-extractor/src/product_extractor/fetchers/`.
+
+**How a product image is found, in order:** JSON-LD `Product` schema (`<script type="application/ld+json">`, handling the bare-object/array/`@graph`-wrapper shapes real sites use, and `image` as a string, an `ImageObject`, or a list of either) → Open Graph `<meta property="og:image">` → give up with a clear message. Both are public, documented conventions sites publish specifically so external services can read a page's canonical image — the opposite of scraping fragile, undocumented CSS selectors, and why no per-site scrapers were built for this milestone (the brief's explicit "Do not assume every website has the same HTML structure" cuts against hand-tuned per-site parsing as much as it argues for one).
+
+**What this deliberately never does, per brief section 7:** log in, solve a CAPTCHA, retry around a block, or use a browser-spoofing User-Agent to evade detection — it identifies itself honestly (`AITryOnBot/0.1 (+...)`) and accepts that some sites will refuse it. `robots.txt` is checked (fetched and parsed ourselves, not via `urllib.robotparser`'s own unprotected fetch) before ever requesting the actual page; a `Disallow` match is treated exactly like every other failure — the brief's required fallback (a clear message pointing at Method B/C upload) via `ProductExtractionError`.
+
+**SSRF protection (`fetchers/ssrf_guard.py`) — the real security work in this milestone:** accepting an arbitrary URL from any visitor and having the server fetch it is a classic vector for turning our server into a proxy into networks it can't otherwise reach (cloud metadata endpoints, internal services, `localhost`). `assert_safe_url()` resolves the hostname and rejects private/loopback/link-local/multicast/reserved ranges — called before the initial request *and* before every redirect hop (redirects are followed manually, capped at 3, specifically so each one gets re-checked rather than trusting the first check to cover a chain that could end up somewhere different). Documented honest limitation: this is a check-then-connect design, not immune to DNS rebinding between the two — a fully airtight version pins the checked IP for the actual connection, which httpx doesn't make trivial and this milestone doesn't implement.
+
+**A real false-positive bug found and fixed during verification, not left in:** the very first real-URL test (against a real public site, not a mock) came back blocked with the generic SSRF message. Root cause: this network reaches IPv4-only sites over IPv6 via NAT64 (RFC 6052) — DNS resolution returned a `64:ff9b::/96`-prefixed address, which Python's `ipaddress.is_reserved` correctly flags as IANA-reserved but which isn't actually risky: it's a well-known mechanism for synthesizing a route to a real, checkable public IPv4 address, embedded in the address's low 32 bits. Fixed by unwrapping that embedded address and checking *it* instead of trusting `.is_reserved` for this one specific, legitimate prefix — with a regression test (`test_ssrf_guard_unwraps_nat64_synthesized_addresses`) covering both the "safe embedded address" and "unsafe embedded address" cases, not just the one that broke.
+
+**API:** `POST /api/extract-product-url` — JSON `{"url": "..."}`, same response shape as `/api/extract-product-image` (PNG bytes + `X-Extraction-Applied`/`X-Extraction-Confidence` headers). Its own rate limit, tighter than the pure-image endpoint's: it's a lever for making our server issue outbound requests, which — SSRF mitigations aside — is still worth limiting more conservatively than a purely local operation.
+
+**Frontend:** the brief's wireframe's "[ Paste Product URL ]" button, built as a collapsed "Or paste a product URL" link (`src/components/ProductUrlInput.tsx`) below "Upload Clothing" — expands to a URL field + Fetch button only when tapped, so it doesn't compete with the primary upload action for attention. A successful fetch behaves exactly like a completed upload (same preview, same auto-detect status display, same category picker) since it already went through the identical server-side extraction pipeline.
+
+**Verified, in order:**
+1. `tests/test_url_fetcher.py` (19 tests): SSRF guard against 11 unsafe targets and 2 safe ones, the NAT64 regression, JSON-LD extraction, OG fallback, no-image and unreachable-page errors, robots.txt disallow — all against `httpx.MockTransport`, zero real network calls, fully deterministic.
+2. `tests/test_extraction_url_api.py` (6 tests): the API layer (request validation, error surfacing, rate limiting) against a fake fetcher.
+3. The real running server via `curl`: confirmed SSRF blocking for a cloud metadata IP and `localhost` both return the generic message; then the NAT64 bug above, found on the very first real-URL attempt against a real public site (`books.toscrape.com` — chosen specifically because it's a site built for scraping practice, not a live commercial one, for this exact kind of verification); after the fix, that same site correctly reached the "no product image found" fallback (it has no OG/JSON-LD product data — an honest, correct outcome, not a bug) and a Wikipedia page's `og:image` was correctly found, downloaded, and cropped by the reused Milestone 7 extractor.
+4. Playwright against the real frontend+backend: pasting a URL and fetching populated the clothing photo exactly like an upload would, and a blocked URL showed the fallback message in the UI with the "Upload Clothing" button still right there — zero console errors in both cases.
+
+**Known limitations, carried forward on purpose:**
+- DNS-rebinding gap noted above (check-then-connect, not IP-pinned) — a real residual risk, not a theoretical one, worth closing before this handles untrusted traffic at real scale.
+- No per-site extractors — every site goes through the same JSON-LD/OG-tag path. A site with neither (unfortunately common) always falls back to asking for an upload. Improving coverage without hand-tuning fragile per-site CSS selectors (which the brief's "don't assume every site has the same structure" argues against maintaining long-term) is future work, not solved here.
+- A single candidate image per page, same as Milestone 7's single-region limitation — no handling yet for a listing/search-results page with multiple products.

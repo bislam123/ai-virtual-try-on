@@ -4,7 +4,7 @@ See how clothes look on you before you buy them — a mobile-first virtual try-o
 
 ## Status
 
-🚧 **Milestone 7 of 13** — see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full milestone plan and current progress.
+🚧 **Milestone 8 of 13** — see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full milestone plan and current progress.
 
 | Milestone | Status |
 |---|---|
@@ -15,7 +15,8 @@ See how clothes look on you before you buy them — a mobile-first virtual try-o
 | 5. Connect frontend to AI backend | ✅ Done as part of Milestone 4 (frontend already calls the real API) |
 | 6. User accounts & secure image handling | ✅ Done |
 | 7. Product image extraction | ✅ Done |
-| 8+ | ⬜ Not started |
+| 8. Product URL support | ✅ Done |
+| 9+ | ⬜ Not started |
 
 ## Non-negotiables (see full brief for details)
 

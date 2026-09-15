@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { ApiError, extractProductImage } from "../api/extractionClient";
+import { ApiError, extractProductImage, type ExtractionOutcome } from "../api/extractionClient";
 import AuthBar from "../components/AuthBar";
 import PhotoPicker from "../components/PhotoPicker";
+import ProductUrlInput from "../components/ProductUrlInput";
 import type { UserResponse } from "../types/auth";
 import type { GarmentCategory } from "../types/tryOn";
 
@@ -71,6 +72,14 @@ export default function HomeScreen({
     }
   };
 
+  const handleUrlExtracted = (outcome: ExtractionOutcome) => {
+    // The backend already ran the same saliency crop a plain upload can
+    // trigger manually (Milestone 7's extractor), so this reuses the same
+    // "done" status display rather than introducing a separate one.
+    setGarmentImage(outcome.file);
+    setExtractionState({ status: "done", applied: outcome.applied });
+  };
+
   return (
     <div className="mx-auto flex min-h-screen max-w-md flex-col gap-6 px-4 pb-10 pt-8">
       <AuthBar user={user} onLogin={onLogin} onSignup={onSignup} onLogout={onLogout} />
@@ -112,6 +121,8 @@ export default function HomeScreen({
           previewAlt="Selected clothing photo"
           buttons={[{ label: "Upload Clothing" }]}
         />
+
+        {!garmentImage && <ProductUrlInput onExtracted={handleUrlExtracted} />}
 
         {garmentImage && (
           <div className="flex flex-col gap-1">

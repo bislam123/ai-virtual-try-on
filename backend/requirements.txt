@@ -16,9 +16,10 @@ psycopg2-binary>=2.9
 bcrypt>=4.0
 pyjwt>=2.8
 
-# Milestone 7: product image extraction — local editable package, see
+# Milestones 7-8: product image/URL extraction — local editable package, see
 # product-extractor/. Install with:
 #   ai\.venv\Scripts\python.exe -m pip install -e product-extractor
-# opencv-contrib-python is already pulled in transitively by fashn-vton
-# (see ai/vendor/fashn-vton-1.5/pyproject.toml's comment on why contrib,
-# not plain opencv-python)
+# Pulls in opencv-contrib-python (already a transitive fashn-vton dependency
+# — see its pyproject.toml comment on why contrib, not plain opencv-python),
+# httpx (already present as a test dependency, now also a runtime one), and
+# beautifulsoup4 (HTML parsing for Method A's JSON-LD/Open Graph lookup).
