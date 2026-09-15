@@ -1,7 +1,15 @@
+import { useState } from "react";
+import { ApiError, extractProductImage } from "../api/extractionClient";
 import AuthBar from "../components/AuthBar";
 import PhotoPicker from "../components/PhotoPicker";
 import type { UserResponse } from "../types/auth";
 import type { GarmentCategory } from "../types/tryOn";
+
+type ExtractionState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "done"; applied: boolean }
+  | { status: "error"; message: string };
 
 const CATEGORY_OPTIONS: { value: GarmentCategory; label: string }[] = [
   { value: "tops", label: "Top" },
@@ -41,6 +49,27 @@ export default function HomeScreen({
   onLogout,
 }: HomeScreenProps) {
   const canSubmit = personImage !== null && garmentImage !== null;
+  const [extractionState, setExtractionState] = useState<ExtractionState>({ status: "idle" });
+
+  const handleGarmentChange = (file: File | null) => {
+    setExtractionState({ status: "idle" });
+    setGarmentImage(file);
+  };
+
+  const handleAutoDetect = async () => {
+    if (!garmentImage) return;
+    setExtractionState({ status: "loading" });
+    try {
+      const outcome = await extractProductImage(garmentImage);
+      setGarmentImage(outcome.file); // note: bypasses handleGarmentChange on purpose, so the status below survives
+      setExtractionState({ status: "done", applied: outcome.applied });
+    } catch (err) {
+      setExtractionState({
+        status: "error",
+        message: err instanceof ApiError ? err.message : "Couldn't process that photo. Please try again.",
+      });
+    }
+  };
 
   return (
     <div className="mx-auto flex min-h-screen max-w-md flex-col gap-6 px-4 pb-10 pt-8">
@@ -79,10 +108,31 @@ export default function HomeScreen({
         <PhotoPicker
           title="Clothing photo"
           file={garmentImage}
-          onChange={setGarmentImage}
+          onChange={handleGarmentChange}
           previewAlt="Selected clothing photo"
           buttons={[{ label: "Upload Clothing" }]}
         />
+
+        {garmentImage && (
+          <div className="flex flex-col gap-1">
+            <button
+              type="button"
+              onClick={() => void handleAutoDetect()}
+              disabled={extractionState.status === "loading"}
+              className="rounded-lg border border-dashed border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 disabled:opacity-60"
+            >
+              {extractionState.status === "loading" ? "Detecting..." : "✂ Auto-detect clothing in photo"}
+            </button>
+            {extractionState.status === "done" && (
+              <p className="text-xs text-slate-500">
+                {extractionState.applied
+                  ? "✓ Cropped to the clothing item."
+                  : "This already looks like a clean product photo — no changes made."}
+              </p>
+            )}
+            {extractionState.status === "error" && <p className="text-xs text-red-600">{extractionState.message}</p>}
+          </div>
+        )}
 
         {garmentImage && (
           <div>

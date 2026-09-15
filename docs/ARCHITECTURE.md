@@ -60,6 +60,22 @@ TryOnService / DB
 
 What an account actually unlocks today: a job submitted while signed in is attributed to that user, which is the only thing that makes `POST /api/try-on/{job_id}/save` meaningful — you can only save a job you created while authenticated (no retroactively claiming an anonymous job onto an account, and no saving someone else's job). Passwords are hashed with bcrypt directly (not passlib — recent passlib/bcrypt version pins are a known breakage source); tokens are signed JWTs (PyJWT), `backend/app/auth/security.py` is the only file that touches either.
 
+## Product extraction (Milestone 7)
+
+```
+Frontend (optional "Auto-detect" button)
+    ↓ POST /api/extract-product-image  (synchronous — see below)
+ExtractionService
+    ↓
+ProductImageExtractor  (interface)
+    ↓
+SaliencyProductExtractor (implementation — classical CV, cv2.saliency)
+```
+
+Same "no vendor lock-in" shape as the AI provider above, applied to a different problem: isolating the actual clothing item out of an upload that might be a full shopping-site screenshot. `ExtractionService` is a thin pass-through today, but it's the seam Milestone 8 (Method A: product URL) and Milestone 9 (Method D: browser extension) plug into — *how* an image arrives (fetch a URL, receive a POST, get one from the extension) is a different concern from *finding the product within* it, which is all `ProductImageExtractor` does. See `product-extractor/README.md` for the Method A-D breakdown.
+
+Unlike `/api/try-on`, this endpoint is **synchronous** — classical CV runs in milliseconds on this CPU, so the job/poll pattern (which exists specifically because of the AI model's cost) would be pure overhead here. Not every backend endpoint follows the same shape; the shape follows the actual cost of the work.
+
 ## Storage abstraction
 
 All file I/O (user photos, garment images, results) goes through a `StorageService` interface (`LocalStorageService` today), not direct filesystem calls, so local disk (dev) can be swapped for object storage (production) later without touching business logic. Since Milestone 6, temp uploads are written under a deterministic path (`tmp/{job_id}/{person,garment}.png`) rather than kept only as in-memory Python objects — necessary once job state can outlive the process that created it (a `DbJobStore`-backed job, picked up after a restart, must be able to find its own inputs from the job record alone).

@@ -32,7 +32,7 @@ dependencies = [
     "huggingface_hub>=0.20.0",
     "pillow>=9.0.0",
     "numpy>=1.21.0",
-    "opencv-python>=4.5.0",
+    "opencv-contrib-python>=4.5.0",
     "tqdm>=4.65.0",
     "einops>=0.6.0",
     "onnxruntime>=1.14.0",
@@ -45,6 +45,9 @@ dependencies = [
 # See docs/AI_MODEL_LICENSE.md and ai/vendor/aitryon-bodyparser/ for the commercially-clean
 # replacement, wired in via a two-line import change in pipeline.py and preprocessing/agnostic.py.
 # `onnxruntime-gpu` was also swapped for plain `onnxruntime` since this dev machine has no CUDA GPU.
+# `opencv-python` was swapped for `opencv-contrib-python` (a strict superset, same `cv2` import,
+# same license) so Milestone 7's product-extractor can use cv2.saliency without two conflicting
+# cv2 installs in one venv — OpenCV's own packaging guidance is to never install both.
 
 [project.optional-dependencies]
 dev = [

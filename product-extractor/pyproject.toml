@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "product-extractor"
+version = "0.1.0"
+description = "AI Try-On's modular product/clothing image extraction system."
+license = { text = "MIT" }
+authors = [{ name = "AI Try-On project" }]
+requires-python = ">=3.10"
+dependencies = ["pillow>=9.0.0", "numpy>=1.21.0", "opencv-contrib-python>=4.5.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -10,7 +10,7 @@
 | 4 | Mobile-first web UI | ✅ Done |
 | 5 | Connect frontend to AI backend | ✅ Done as part of Milestone 4 — the frontend calls the real `/api/try-on` from the start, not mock data |
 | 6 | User accounts & secure image handling | ✅ Done |
-| 7 | Product image extraction | ⬜ Not started |
+| 7 | Product image extraction | ✅ Done |
 | 8 | Product URL support | ⬜ Not started |
 | 9 | Browser extension | ⬜ Not started |
 | 10 | PWA / mobile optimization | ⬜ Not started |
@@ -183,3 +183,35 @@ cd backend
 - `backend/scripts/cleanup_expired_results.py` (the "unsaved images are temporary" enforcement) exists and works but isn't wired to a scheduler yet — needs real infra (cron/Task Scheduler/hosted cron), out of scope for this milestone.
 - Account deletion isn't a feature yet (no endpoint) — the cascade behavior is in place for when it is.
 - `plan` is a free-text column defaulting to `"free"`; nothing reads or enforces it yet (Milestone 11).
+
+## Milestone 7 — Product image extraction
+
+`product-extractor/` (see its own README) is the modular system from the brief's section 7: isolate the actual clothing item out of whatever a user uploads, whether that's already a clean product photo or a full shopping-site screenshot. This milestone covers Methods B and C (upload / screenshot); Method A (product URL) is Milestone 8, Method D (browser extension) is Milestone 9 — both will call into the same `ExtractionService`.
+
+**Why classical CV, not a new deep learning model** (full reasoning in `saliency_extractor.py`'s docstring — same rigor as every model choice in [AI_MODEL_LICENSE.md](AI_MODEL_LICENSE.md), applied to a case where the honest answer was "don't add one yet"): `cv2.saliency` (OpenCV's spectral-residual saliency — a classical algorithm, not learned weights) finds the most visually distinctive region in an image with no model download and no new license research. Required switching `opencv-python` → `opencv-contrib-python` in the vendored `fashn-vton-1.5` (a strict superset, same `cv2` import — OpenCV's own guidance is to never have both installed at once).
+
+**Install:**
+```powershell
+ai\.venv\Scripts\python.exe -m pip uninstall -y opencv-python
+ai\.venv\Scripts\python.exe -m pip install opencv-contrib-python
+ai\.venv\Scripts\python.exe -m pip install -e product-extractor
+```
+
+**Tuning the confidence metric — a real dead end, corrected before it shipped:** the first version scored confidence as the raw mean saliency intensity inside the detected region. Tested against a synthetic "screenshot" (a real product photo pasted into a mock shopping page) and a control (an already-clean product photo, which should *not* trigger cropping) — the screenshot case scored only 0.264, below the sensible-looking 0.35 threshold, even though the detected bounding box was already landing in the right place. Root cause: spectral residual saliency's absolute output isn't a calibrated probability. Switched to **dominance** — what fraction of *all* detected salient area belongs to the single largest region — which separates the two cases cleanly (~0.86 for the correct screenshot detection vs. ~0.19 for the clean-photo control, which has many similarly-sized salient sub-features and no single standout region). This is why the tests in `tests/test_product_extractor.py` assert on both cases, not just the happy path.
+
+**API:** `POST /api/extract-product-image` — multipart `image` upload, returns the (possibly cropped) PNG directly with `X-Extraction-Applied`/`X-Extraction-Confidence` headers. Deliberately **synchronous**, not job/poll like `/api/try-on`: classical CV runs in milliseconds on this CPU, so the job pattern (which exists because of the AI model's cost) would be pure overhead here. Its own, more generous rate limit (`AITRYON_EXTRACTION_RATE_LIMIT_*`) reflects that different cost profile.
+
+**Frontend:** an "✂ Auto-detect clothing in photo" button appears once a clothing photo is selected (`src/api/extractionClient.ts`, wired into `HomeScreen.tsx`) — optional, never automatic, so a already-good upload is never silently altered without the user asking.
+
+**A real bug caught by the E2E pass, not the unit tests:** `X-Extraction-Applied`/`X-Extraction-Confidence` never showed up in the frontend (`response.headers.get(...)` returned `null`) even though `curl` and the backend test suite both saw them fine. Cause: on a cross-origin request (frontend `:5173`, backend `:8000` in dev), the browser's `fetch()` API silently strips any response header not explicitly exposed via CORS — `curl` and Playwright's own network listener both bypass that browser-only restriction, which is exactly why the bug was invisible to every check except an actual click in an actual browser. Fixed with `expose_headers=[...]` on the `CORSMiddleware` in `main.py`. Worth remembering for any future endpoint that puts data in custom response headers.
+
+**Verified, in order:**
+1. Interactive tuning against two synthetic scenarios (see above), saved as `tests/test_product_extractor.py` (3 tests: extracts correctly, leaves a clean photo alone, doesn't crash on a blank image).
+2. `tests/test_extraction_api.py` (4 tests: the same two scenarios through the actual HTTP endpoint, non-image rejection, rate limiting) — all fast, no AI model or database needed.
+3. The real running server via `curl`: mock screenshot → applied, clean photo → not applied, non-image → 400. All matched the unit-test expectations exactly.
+4. Playwright against the real frontend+backend — this is the pass that caught the CORS bug above. After the fix: uploading the mock screenshot and clicking "Auto-detect" correctly replaced the preview with the cropped image and showed "✓ Cropped to the clothing item."; uploading an already-clean photo correctly showed "no changes made" instead. Zero console errors in both cases.
+
+**Known limitations, carried forward on purpose:**
+- Tuned against two synthetic test images, not a corpus of real shopping-site screenshots (none exist yet in this project). The dominance-ratio approach should generalize reasonably, but the exact thresholds (`_MIN_DOMINANCE`, `_MIN_AREA_RATIO`, `_MAX_AREA_RATIO`) are first-pass estimates, flagged as such in the code, and worth revisiting once real usage data exists.
+- Only finds one candidate region. A screenshot with multiple product thumbnails (e.g. a search results grid) would currently just get the single most dominant one — reasonable for a single-product page, not yet handled for a listing page.
+- Not wired into the try-on submission flow automatically — it's an optional button the user chooses to press, not a preprocessing step forced on every upload.

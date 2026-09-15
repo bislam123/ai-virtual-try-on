@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api import auth, tryon
+from .api import auth, extraction, tryon
 from .config import settings
 from .core.errors import configure_exception_handlers
 from .providers.selfhosted import SelfHostedVTONProvider
@@ -31,6 +31,9 @@ async def lifespan(app: FastAPI):
     provider = SelfHostedVTONProvider(weights_dir=settings.weights_dir, device=settings.device)
     app.state.tryon_service = TryOnService(provider=provider, storage=storage, job_store=job_store)
     app.state.rate_limiter = RateLimiter(settings.rate_limit_max_requests, settings.rate_limit_window_seconds)
+    app.state.extraction_rate_limiter = RateLimiter(
+        settings.extraction_rate_limit_max_requests, settings.extraction_rate_limit_window_seconds
+    )
     logger.info("AI Try-On backend ready.")
     yield
 
@@ -42,6 +45,14 @@ app.add_middleware(
     allow_origins=settings.cors_origins,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
+    # Without this, the browser's fetch() API silently strips these from
+    # response.headers on a cross-origin request (frontend :5173, backend
+    # :8000 in dev) — only a small "simple response header" allowlist is
+    # exposed to JS by default. Found by an actual failing Playwright run
+    # against the real server, not by inspection: the raw HTTP response had
+    # the headers (visible to Playwright's network listener), but
+    # extractionClient.ts's response.headers.get(...) read null for both.
+    expose_headers=["X-Extraction-Applied", "X-Extraction-Confidence"],
 )
 
 
@@ -55,3 +66,4 @@ async def health():
 
 app.include_router(tryon.router)
 app.include_router(auth.router)
+app.include_router(extraction.router)

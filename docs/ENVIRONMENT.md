@@ -35,7 +35,8 @@ All read by `backend/app/config.py` (`pydantic-settings`, prefix `AITRYON_`), wi
 | `AITRYON_STORAGE_DIR` | `backend/storage` | Local temp/results file root |
 | `AITRYON_MAX_UPLOAD_SIZE_MB` | `10` | Upload size cap |
 | `AITRYON_MAX_IMAGE_DIMENSION_PX` | `4096` | Upload dimension cap |
-| `AITRYON_RATE_LIMIT_MAX_REQUESTS` / `AITRYON_RATE_LIMIT_WINDOW_SECONDS` | `20` / `3600` | Abuse-protection rate limit (not the real per-plan quota system — that's Milestone 11) |
+| `AITRYON_RATE_LIMIT_MAX_REQUESTS` / `AITRYON_RATE_LIMIT_WINDOW_SECONDS` | `20` / `3600` | Abuse-protection rate limit for `/api/try-on` (not the real per-plan quota system — that's Milestone 11) |
+| `AITRYON_EXTRACTION_RATE_LIMIT_MAX_REQUESTS` / `AITRYON_EXTRACTION_RATE_LIMIT_WINDOW_SECONDS` | `60` / `600` | Separate, more generous limit for `/api/extract-product-image` — classical CV, not the AI model, so a much cheaper request |
 | `AITRYON_CORS_ORIGINS` | `["http://localhost:5173", ...]` | Frontend origins allowed to call the API |
 | `AITRYON_DATABASE_URL` | `postgresql+psycopg2://postgres:devpassword@localhost:5432/aitryon` | **Must be overridden outside local dev.** |
 | `AITRYON_JWT_SECRET_KEY` | `dev-only-insecure-secret-change-me` | **Must be overridden outside local dev.** Signs auth tokens — generate a real one with `python -c "import secrets; print(secrets.token_hex(32))"` |

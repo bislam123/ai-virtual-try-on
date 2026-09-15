@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     rate_limit_max_requests: int = 20
     rate_limit_window_seconds: int = 3600
 
+    # Product image extraction (Milestone 7) is classical CV, not a GPU/CPU-
+    # heavy diffusion job — milliseconds, not minutes — so it gets its own,
+    # far more generous limit rather than sharing the try-on one.
+    extraction_rate_limit_max_requests: int = 60
+    extraction_rate_limit_window_seconds: int = 600
+
     # --- CORS (frontend origins allowed to call this API) ---
     cors_origins: List[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
