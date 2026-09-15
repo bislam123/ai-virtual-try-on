@@ -7,8 +7,8 @@
 | 1 | Hardware & AI model evaluation | ✅ Done |
 | 2 | AI model installation & first test inference | ✅ Done |
 | 3 | AI inference FastAPI service (`POST /api/try-on`) | ✅ Done |
-| 4 | Mobile-first web UI | ⬜ Not started |
-| 5 | Connect frontend to AI backend | ⬜ Not started |
+| 4 | Mobile-first web UI | ✅ Done |
+| 5 | Connect frontend to AI backend | ✅ Done as part of Milestone 4 — the frontend calls the real `/api/try-on` from the start, not mock data |
 | 6 | User accounts & secure image handling | ⬜ Not started |
 | 7 | Product image extraction | ⬜ Not started |
 | 8 | Product URL support | ⬜ Not started |
@@ -103,3 +103,38 @@ ai\.venv\Scripts\python.exe -m pytest -v
 - Job state is in-memory (`JobStore`) — doesn't survive a restart, doesn't work across multiple worker processes. Real fix arrives with the database in Milestone 6; kept behind a small interface so that swap doesn't touch the API layer.
 - Rate limiting is a per-IP in-memory fixed window (abuse protection only) — real per-user/per-plan quotas need accounts + a database (Milestone 11).
 - No auth yet — anyone who can reach the API can submit jobs. Fine for local dev; must not ship publicly before Milestone 6.
+- Temp upload cleanup runs in a `finally` block, so it's skipped if the process is killed mid-job (observed while smoke-testing Milestone 4: force-stopping the server mid-inference left one job's temp files behind, since the whole process died before `finally` could run). Not a bug in the happy/failure path — a real gap for a hard crash/restart. A periodic sweep of orphaned `backend/storage/tmp/*` dirs on startup would close it; worth doing alongside Milestone 6's other hardening.
+
+## Milestone 4 — Mobile-first web UI
+
+`frontend/` is a Vite + React 19 + TypeScript + Tailwind CSS v4 PWA-shaped app (full PWA installability — manifest icons, service worker — is Milestone 10; this milestone is the responsive UI itself). Talks to the backend over plain `fetch`, configured via `VITE_API_BASE_URL` (`.env.example`).
+
+**Install & run:**
+```powershell
+cd frontend
+npm install
+npm run dev          # http://localhost:5173 — CORS-allowed by the backend's default config
+```
+Needs the backend running too (see Milestone 3 above) — the app calls it directly, no proxy.
+
+**Structure:**
+| Path | Purpose |
+|---|---|
+| `src/screens/{Home,Processing,Result}Screen.tsx` | The three screens from the brief's UI spec |
+| `src/hooks/useTryOnFlow.ts` | The whole client-side state machine: selected photos → submit → poll → result/error |
+| `src/api/tryOnClient.ts` | Thin fetch wrapper matching the backend's schemas exactly |
+| `src/components/PhotoPicker.tsx` | Shared camera/gallery picker; "Take Your Photo" uses `capture="user"` to jump straight to the camera on mobile, "Choose Your Photo"/"Upload Clothing" omit it so the OS offers camera+gallery+files |
+| `src/utils/resultActions.ts` | Save (blob download — works cross-origin, unlike a plain `<a download>` on a cross-origin URL) and Share (Web Share API with a file, falling back to download where unsupported, e.g. most desktop browsers) |
+
+**Deliberately not built yet** (later milestones per the brief): "Paste Product URL" (Milestone 8 — the backend has no URL extraction to call), accounts/login (Milestone 6 — brief says don't force accounts before the MVP works), full PWA installability (Milestone 10).
+
+**Verified, not just written** — `npm run build` and `npm run lint` both clean, then a headless-Chromium pass (Playwright, 390×844 mobile viewport, no project `run` skill existed yet so this used the generic browser-driven pattern) against the actual running frontend+backend:
+- Home screen renders correctly at mobile width, matches the brief's wireframe (screenshot below)
+- Submit button correctly starts disabled, enables once both photos are selected, disables again if a photo is removed
+- Selecting photos shows live previews with a working remove button; picking a garment reveals the category selector
+- Submitting calls the real `POST /api/try-on`, transitions to the processing screen, zero console errors throughout
+- Did *not* wait for a real submission to finish in this pass (proven separately and repeatedly in Milestones 2-3 — a generation takes 10-70+ minutes on this CPU-only machine, which the processing screen's copy sets expectations for)
+
+![Home screen, filled in](../frontend/docs-assets/home_screen_filled.png)
+
+**Known gap:** killing the dev server mid-job (as happened once while smoke-testing) leaves that job's temp files behind — same root cause as the backend gap noted above.

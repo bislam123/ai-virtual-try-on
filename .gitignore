@@ -27,6 +27,7 @@ backend/storage/tmp/*
 *.jpeg
 *.png
 !frontend/public/**
+!frontend/docs-assets/**
 !docs/**/*.png
 
 # Test artifacts

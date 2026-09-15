@@ -1,0 +1,18 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+body {
+  margin: 0;
+  background: #f8fafc;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Comfortable minimum tap target size on touch devices. */
+button {
+  touch-action: manipulation;
+}
