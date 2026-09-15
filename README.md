@@ -4,7 +4,7 @@ See how clothes look on you before you buy them — a mobile-first virtual try-o
 
 ## Status
 
-🚧 **Milestone 8 of 13** — see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full milestone plan and current progress.
+🚧 **Milestone 9 of 13** — see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full milestone plan and current progress.
 
 | Milestone | Status |
 |---|---|
@@ -16,7 +16,8 @@ See how clothes look on you before you buy them — a mobile-first virtual try-o
 | 6. User accounts & secure image handling | ✅ Done |
 | 7. Product image extraction | ✅ Done |
 | 8. Product URL support | ✅ Done |
-| 9+ | ⬜ Not started |
+| 9. Browser extension | ✅ Done |
+| 10+ | ⬜ Not started |
 
 ## Non-negotiables (see full brief for details)
 
@@ -33,7 +34,7 @@ ai-try-on/
 ├── backend/           # FastAPI application
 ├── ai/                # Self-hosted VTON model, inference, preprocessing
 ├── product-extractor/ # Modular product/clothing image extraction (see its own README)
-├── extension/         # Browser extension (later milestone)
+├── extension/         # Browser "Try It On" button — see its own README
 ├── docs/              # ARCHITECTURE.md, AI_MODEL_LICENSE.md, DEVELOPMENT.md, ENVIRONMENT.md
 └── tests/
 ```

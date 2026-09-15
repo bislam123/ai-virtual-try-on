@@ -52,6 +52,23 @@ export default function HomeScreen({
   const canSubmit = personImage !== null && garmentImage !== null;
   const [extractionState, setExtractionState] = useState<ExtractionState>({ status: "idle" });
 
+  // Milestone 9: the browser extension hands off a product page by opening
+  // this app with ?productUrl=<page url>. Read it exactly once (a lazy
+  // useState initializer runs only on the very first render — see
+  // ProcessingScreen.tsx for the same pattern) and strip it from the URL
+  // immediately, so returning to this screen later (e.g. "Try Another")
+  // never re-triggers the same fetch.
+  const [initialProductUrl] = useState<string | undefined>(() => {
+    const params = new URLSearchParams(window.location.search);
+    const productUrl = params.get("productUrl");
+    if (productUrl) {
+      params.delete("productUrl");
+      const newSearch = params.toString();
+      window.history.replaceState({}, "", window.location.pathname + (newSearch ? `?${newSearch}` : ""));
+    }
+    return productUrl ?? undefined;
+  });
+
   const handleGarmentChange = (file: File | null) => {
     setExtractionState({ status: "idle" });
     setGarmentImage(file);
@@ -122,7 +139,7 @@ export default function HomeScreen({
           buttons={[{ label: "Upload Clothing" }]}
         />
 
-        {!garmentImage && <ProductUrlInput onExtracted={handleUrlExtracted} />}
+        {!garmentImage && <ProductUrlInput onExtracted={handleUrlExtracted} initialUrl={initialProductUrl} />}
 
         {garmentImage && (
           <div className="flex flex-col gap-1">

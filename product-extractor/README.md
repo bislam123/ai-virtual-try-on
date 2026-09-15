@@ -9,7 +9,7 @@ The modular product/clothing image extraction system described in the project br
 | **B. Product image upload** | ✅ Milestone 7 — `SaliencyProductExtractor` |
 | **C. Screenshot upload** | ✅ Milestone 7 — same extractor; a screenshot is just a harder case of the same problem (more clutter to crop away) |
 | **A. Product URL** | ✅ Milestone 8 — `fetchers/HttpProductPageFetcher` fetches a page (respecting robots.txt, SSRF-guarded — see `fetchers/ssrf_guard.py`), finds its product image via JSON-LD `Product` schema or Open Graph tags, then hands it to the same extractor above. Falls back to asking for an upload (Method B/C) when extraction fails, for any reason — never bypasses auth/paywalls/CAPTCHAs/anti-bot systems |
-| **D. Browser extension** | ⬜ Milestone 9 — will call the same backend endpoints this and the previous milestone added, `POST /api/extract-product-image` / `POST /api/extract-product-url` |
+| **D. Browser extension** | ✅ Milestone 9 — `extension/` calls the exact same `POST /api/extract-product-url` this milestone added, no new backend code needed here |
 
 ## Design
 

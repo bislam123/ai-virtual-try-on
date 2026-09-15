@@ -29,6 +29,7 @@ backend/storage/tmp/*
 !frontend/public/**
 !frontend/docs-assets/**
 !docs/**/*.png
+!extension/icons/**
 
 # Test artifacts
 .pytest_cache/

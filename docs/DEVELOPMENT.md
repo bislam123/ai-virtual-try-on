@@ -12,7 +12,7 @@
 | 6 | User accounts & secure image handling | ✅ Done |
 | 7 | Product image extraction | ✅ Done |
 | 8 | Product URL support | ✅ Done |
-| 9 | Browser extension | ⬜ Not started |
+| 9 | Browser extension | ✅ Done |
 | 10 | PWA / mobile optimization | ⬜ Not started |
 | 11 | Usage limits & premium architecture | ⬜ Not started |
 | 12 | Payments / in-app purchases | ⬜ Not started |
@@ -242,3 +242,26 @@ Given a product page link, fetch it and find its product image — reusing Miles
 - DNS-rebinding gap noted above (check-then-connect, not IP-pinned) — a real residual risk, not a theoretical one, worth closing before this handles untrusted traffic at real scale.
 - No per-site extractors — every site goes through the same JSON-LD/OG-tag path. A site with neither (unfortunately common) always falls back to asking for an upload. Improving coverage without hand-tuning fragile per-site CSS selectors (which the brief's "don't assume every site has the same structure" argues against maintaining long-term) is future work, not solved here.
 - A single candidate image per page, same as Milestone 7's single-region limitation — no handling yet for a listing/search-results page with multiple products.
+
+## Milestone 9 — Browser extension (brief sections 7/8, Method D)
+
+`extension/` — see its own README for load/config instructions. Deliberately thin, per the brief ("Do NOT make the extension the foundation of the application"): a content script detects a likely product page and injects a **✨ Try It On** button; clicking it opens the web app with the page's URL attached, and the web app (already built) does everything else. **No new backend endpoint exists for this milestone** — it's a new client for the exact same `POST /api/extract-product-url` Milestone 8 built, which is precisely what the brief's "the same backend must work with the web app, the extension, and future mobile integrations" asks for.
+
+**Detection** (`content.js`, client-side JS mirroring the same signals the backend's Method A already looks for): JSON-LD `Product` schema, or `og:type=product`, or (`og:image` + a price meta tag together, since an image alone is too weak a signal on its own). No per-site logic, no fixed domain list — same reasoning as Milestone 8's extractor.
+
+**Permission footprint, deliberately minimal:** no `host_permissions`, no background service worker, no storage access — just a content script reading the current page's own DOM and calling `window.open()`. Worth being deliberate about, since this script runs on every page the user visits; smaller footprint means less to review and less to trust blindly.
+
+**Frontend change to support the handoff:** `HomeScreen.tsx` reads `?productUrl=` once via a lazy `useState` initializer (same "runs exactly once at mount" pattern as `ProcessingScreen.tsx`'s elapsed-timer), strips it from the URL immediately via `history.replaceState` (so returning to this screen later, e.g. "Try Another", never re-triggers the same fetch), and passes it to `ProductUrlInput` as `initialUrl`, which auto-runs the exact same fetch its manual "paste a URL" flow already does.
+
+**A lint issue worth recording:** the auto-fetch effect's first draft used an empty dependency array with a `// eslint-disable-next-line` comment to silence the "missing dependency" warning — which doesn't actually work, because oxlint's disable-comment syntax is `// oxlint-disable-next-line`, not the ESLint one. Rather than chase the right magic comment, switched to the more idiomatic fix: a `useRef` guard flag plus a complete, honest dependency array (`[initialUrl, fetchUrl]`, with `fetchUrl` wrapped in `useCallback`) — passes the linter because it's actually correct, not because a warning was suppressed.
+
+**Verified, in order:**
+1. Playwright loading the *actual* unpacked extension into a real Chromium instance (`chromium.launchPersistentContext` with `--load-extension`) against local static HTML fixtures with real `Product` JSON-LD: the button appears on a product-like fixture and is absent on a plain one; clicking it opens a new tab whose URL contains the correctly `encodeURIComponent`-escaped source page URL.
+2. The full handoff through the real running frontend+backend: navigating directly to the same URL the extension's `window.open()` produces (a real extractable page — reused the Wikipedia URL already proven in Milestone 8) auto-triggered extraction with zero manual interaction, correctly populated the clothing photo, and the query param was gone from the address bar afterward — zero console errors.
+
+Given the project's established pattern of using Playwright as an ad-hoc, documented verification tool for each milestone rather than committed CI infrastructure (no `npm test` exists for the frontend either), this extension test was run the same way and is not checked into the repo as a permanent test file — reproduce it with the exact commands in `extension/README.md`'s Testing section if needed again.
+
+**Known limitations, carried forward on purpose:**
+- No `MutationObserver` — a single-page-app site that swaps in product content without a full navigation won't get re-detected. Real complexity not yet justified without evidence it's needed against real shopping sites.
+- Content script runs its (cheap) detection on every HTTP/HTTPS page visited, not a fixed shopping-site allowlist — a deliberate choice (the brief argues against assuming a fixed set of sites) but worth being upfront about, same as noted in the extension's own README.
+- `WEB_APP_URL` is a hardcoded constant (`http://localhost:5173`) with a `window.__AI_TRYON_WEB_APP_URL__` override hook — fine for local dev, needs a real build-time configuration story before packaging for an actual store listing (Milestone 13 territory).
