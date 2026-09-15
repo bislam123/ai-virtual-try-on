@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv*/
+venv*/
+*.venv/
+
+# AI model weights & caches (large binaries — never commit)
+ai/models/**/*.safetensors
+ai/models/**/*.pth
+ai/models/**/*.onnx
+ai/models/**/*.bin
+ai/checkpoints/
+ai/.cache/
+huggingface_cache/
+*.ckpt
+
+# User-uploaded / generated images (never commit real user content)
+backend/storage/uploads/
+backend/storage/results/
+backend/storage/tmp/
+*.jpg
+*.jpeg
+*.png
+!frontend/public/**
+!docs/**/*.png
+
+# Node / frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Env & secrets
+.env
+.env.local
+*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Logs
+*.log
