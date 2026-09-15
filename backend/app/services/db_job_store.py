@@ -16,6 +16,7 @@ def _to_job(record: JobRecord) -> Job:
         num_timesteps=record.num_timesteps,
         guidance_scale=record.guidance_scale,
         seed=record.seed,
+        client_ip=record.client_ip,
         status=JobStatus(record.status),
         error=record.error,
         saved=record.saved,
@@ -33,6 +34,7 @@ class DbJobStore(JobStore):
         num_timesteps: int,
         guidance_scale: float,
         seed: int,
+        client_ip: Optional[str] = None,
     ) -> Job:
         record = JobRecord(
             id=uuid.uuid4().hex,
@@ -41,6 +43,7 @@ class DbJobStore(JobStore):
             num_timesteps=num_timesteps,
             guidance_scale=guidance_scale,
             seed=seed,
+            client_ip=client_ip,
             status=JobStatus.PENDING.value,
         )
         with get_session() as session:

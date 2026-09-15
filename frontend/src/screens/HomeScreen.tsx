@@ -3,6 +3,7 @@ import { ApiError, extractProductImage, type ExtractionOutcome } from "../api/ex
 import AuthBar from "../components/AuthBar";
 import PhotoPicker from "../components/PhotoPicker";
 import ProductUrlInput from "../components/ProductUrlInput";
+import UsageIndicator from "../components/UsageIndicator";
 import type { UserResponse } from "../types/auth";
 import type { GarmentCategory } from "../types/tryOn";
 
@@ -29,6 +30,7 @@ interface HomeScreenProps {
   onDismissError: () => void;
   onSubmit: () => void;
   user: UserResponse | null;
+  authToken: string | null;
   onLogin: (email: string, password: string) => Promise<void>;
   onSignup: (email: string, password: string) => Promise<void>;
   onLogout: () => void;
@@ -45,6 +47,7 @@ export default function HomeScreen({
   onDismissError,
   onSubmit,
   user,
+  authToken,
   onLogin,
   onSignup,
   onLogout,
@@ -198,6 +201,8 @@ export default function HomeScreen({
       >
         Try It On
       </button>
+
+      <UsageIndicator authToken={authToken} />
 
       <p className="text-center text-xs text-slate-400">
         Your photos are used only to generate this result and aren't kept unless you choose to save it.

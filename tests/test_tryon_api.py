@@ -22,6 +22,7 @@ from backend.app.services.job_store import InMemoryJobStore
 from backend.app.services.rate_limiter import RateLimiter
 from backend.app.services.storage import LocalStorageService
 from backend.app.services.tryon_service import TryOnService
+from tests.conftest import FakeQuotaService
 
 
 class FakeProvider(VirtualTryOnProvider):
@@ -36,7 +37,7 @@ class BrokenProvider(VirtualTryOnProvider):
         raise RuntimeError("simulated model failure with a sensitive internal detail")
 
 
-def make_test_app(tmp_path, provider=None, rate_limit=1000):
+def make_test_app(tmp_path, provider=None, rate_limit=1000, quota_service=None):
     app = FastAPI()
     configure_exception_handlers(app)
     app.include_router(tryon_module.router)
@@ -46,6 +47,7 @@ def make_test_app(tmp_path, provider=None, rate_limit=1000):
         job_store=InMemoryJobStore(),
     )
     app.state.rate_limiter = RateLimiter(max_requests=rate_limit, window_seconds=3600)
+    app.state.quota_service = quota_service or FakeQuotaService()
     return app
 
 
@@ -142,3 +144,31 @@ def test_rate_limit_blocks_after_max_requests(tmp_path):
     second = _submit(client)
     assert second.status_code == 429
     assert "Retry-After" in second.headers
+
+
+def test_quota_exceeded_blocks_submission_with_clear_message(tmp_path):
+    client = TestClient(make_test_app(tmp_path, quota_service=FakeQuotaService(exceeded=True)))
+    resp = _submit(client)
+    assert resp.status_code == 429
+    assert "generations for today" in resp.json()["detail"]
+
+
+def test_num_timesteps_clamped_by_plan_cap(tmp_path):
+    # A plan cap of 10 must win even if the request asks for more and the
+    # global settings.max_num_timesteps (50 by default) would otherwise allow it.
+    captured = {}
+
+    class RecordingProvider(VirtualTryOnProvider):
+        def generate(self, request: TryOnRequest) -> TryOnResult:
+            captured["num_timesteps"] = request.num_timesteps
+            return TryOnResult(image=Image.new("RGB", (64, 64), color="blue"))
+
+    client = TestClient(
+        make_test_app(
+            tmp_path,
+            provider=RecordingProvider(),
+            quota_service=FakeQuotaService(max_num_timesteps=10),
+        )
+    )
+    _submit(client, num_timesteps=40)
+    assert captured["num_timesteps"] == 10

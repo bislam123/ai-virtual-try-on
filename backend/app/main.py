@@ -4,11 +4,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api import auth, extraction, tryon
+from .api import auth, extraction, tryon, usage
 from .config import settings
 from .core.errors import configure_exception_handlers
 from .providers.selfhosted import SelfHostedVTONProvider
 from .services.db_job_store import DbJobStore
+from .services.quota_service import QuotaService
 from .services.rate_limiter import RateLimiter
 from .services.storage import LocalStorageService
 from .services.tryon_service import TryOnService
@@ -37,6 +38,7 @@ async def lifespan(app: FastAPI):
     app.state.url_extraction_rate_limiter = RateLimiter(
         settings.url_extraction_rate_limit_max_requests, settings.url_extraction_rate_limit_window_seconds
     )
+    app.state.quota_service = QuotaService()
     logger.info("AI Try-On backend ready.")
     yield
 
@@ -70,3 +72,4 @@ async def health():
 app.include_router(tryon.router)
 app.include_router(auth.router)
 app.include_router(extraction.router)
+app.include_router(usage.router)

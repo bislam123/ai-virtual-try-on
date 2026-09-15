@@ -29,15 +29,14 @@ The development machine (Windows, AMD integrated GPU, no CUDA) cannot run diffus
 
 Both environments run the exact same `SelfHostedVTONProvider` code; only the hardware backing PyTorch differs (`device="cpu"` vs `device="cuda"`).
 
-## Monetization-ready shape
-
-The account/usage layer is designed so limits are backend-configurable, not hardcoded:
+## Monetization-ready shape (Milestones 6 + 11)
 
 ```
 User → Account → Plan (free/premium) → Usage quota (per day/month) → AI generation
+       users.plan (FK)   plans table       QuotaService              POST /api/try-on
 ```
 
-`users.plan` (Milestone 6) is a plain string column, not an enum with limits baked into it — Milestone 11 reads quota numbers from configuration/database, never from scattered `if` statements across the frontend. No payment integration exists yet, per the brief.
+Every stage is real, not a placeholder: `users.plan` is a foreign key into a `plans` table (`max_generations_per_day`, `max_generations_per_month`, `max_num_timesteps` — all nullable, `NULL` = unlimited), and `QuotaService` enforces it against real database counts before every generation. Changing a limit, or moving a user between plans, is a database `UPDATE` — no code change, no redeploy; verified live, not just designed that way (see `docs/DEVELOPMENT.md`'s Milestone 11 section). `RateLimiter` (Milestone 3) is a separate, deliberately different layer — in-memory, process-local, guards short-burst abuse — that still applies alongside this; they answer different questions and neither replaces the other. No payment integration exists yet, per the brief — nothing here lets a user change their own plan.
 
 ## API layer: jobs, not synchronous requests
 

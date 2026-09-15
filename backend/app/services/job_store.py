@@ -39,6 +39,7 @@ class Job:
     num_timesteps: int
     guidance_scale: float
     seed: int
+    client_ip: Optional[str] = None  # Milestone 11: anonymous-caller usage-quota tracking
     status: JobStatus = JobStatus.PENDING
     error: Optional[str] = None
     saved: bool = False
@@ -56,6 +57,7 @@ class JobStore(ABC):
         num_timesteps: int,
         guidance_scale: float,
         seed: int,
+        client_ip: Optional[str] = None,
     ) -> Job: ...
 
     @abstractmethod
@@ -81,6 +83,7 @@ class InMemoryJobStore(JobStore):
         num_timesteps: int,
         guidance_scale: float,
         seed: int,
+        client_ip: Optional[str] = None,
     ) -> Job:
         job = Job(
             id=uuid.uuid4().hex,
@@ -89,6 +92,7 @@ class InMemoryJobStore(JobStore):
             num_timesteps=num_timesteps,
             guidance_scale=guidance_scale,
             seed=seed,
+            client_ip=client_ip,
         )
         with self._lock:
             self._jobs[job.id] = job

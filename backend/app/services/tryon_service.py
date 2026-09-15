@@ -42,6 +42,7 @@ class TryOnService:
         guidance_scale: float,
         seed: int,
         user_id: Optional[int] = None,
+        client_ip: Optional[str] = None,
     ) -> Job:
         """Create the job record and persist the validated inputs as temp files.
 
@@ -59,6 +60,7 @@ class TryOnService:
             num_timesteps=num_timesteps,
             guidance_scale=guidance_scale,
             seed=seed,
+            client_ip=client_ip,
         )
         self.storage.save_temp_upload(job.id, PERSON_FILENAME, _to_png_bytes(person_image))
         self.storage.save_temp_upload(job.id, GARMENT_FILENAME, _to_png_bytes(garment_image))

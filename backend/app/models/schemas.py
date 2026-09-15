@@ -53,3 +53,14 @@ class ExtractProductUrlRequest(BaseModel):
     # want), and fetchers/ssrf_guard.py is the actual authority on whether a
     # URL is safe to fetch, not this schema. This just requires *a* string.
     url: str = Field(min_length=1, max_length=2048)
+
+
+class UsageStatusResponse(BaseModel):
+    plan: str
+    limit_per_day: Optional[int]
+    limit_per_month: Optional[int]
+    used_today: int
+    used_this_month: int
+    remaining_today: Optional[int]
+    remaining_this_month: Optional[int]
+    max_num_timesteps: Optional[int]

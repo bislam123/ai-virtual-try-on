@@ -21,13 +21,16 @@ from sqlalchemy.exc import OperationalError
 
 from backend.app.api import auth as auth_module
 from backend.app.api import tryon as tryon_module
+from backend.app.api import usage as usage_module
 from backend.app.core.errors import configure_exception_handlers
-from backend.app.db import User, engine, get_session
+from backend.app.db import Plan, User, engine, get_session
 from backend.app.providers.base import TryOnRequest, TryOnResult, VirtualTryOnProvider
 from backend.app.services.db_job_store import DbJobStore
+from backend.app.services.quota_service import QuotaService
 from backend.app.services.rate_limiter import RateLimiter
 from backend.app.services.storage import LocalStorageService
 from backend.app.services.tryon_service import TryOnService
+from tests.conftest import FakeQuotaService
 
 
 def _db_reachable() -> bool:
@@ -50,17 +53,25 @@ class FakeProvider(VirtualTryOnProvider):
         return TryOnResult(image=Image.new("RGB", (64, 64), color="red"))
 
 
-def make_test_app(tmp_path):
+def make_test_app(tmp_path, quota_service=None):
     app = FastAPI()
     configure_exception_handlers(app)
     app.include_router(tryon_module.router)
     app.include_router(auth_module.router)
+    app.include_router(usage_module.router)
     app.state.tryon_service = TryOnService(
         provider=FakeProvider(),
         storage=LocalStorageService(str(tmp_path)),
         job_store=DbJobStore(),
     )
     app.state.rate_limiter = RateLimiter(max_requests=1000, window_seconds=3600)
+    # Permissive by default: anonymous usage is tracked by client IP, which
+    # every TestClient request in this file shares — a real QuotaService
+    # here by default would make repeated test runs flaky as that shared
+    # identity's daily count climbs (see conftest.py's FakeQuotaService
+    # docstring). Tests that specifically verify quota enforcement pass
+    # quota_service=QuotaService() explicitly and use a fresh per-test user.
+    app.state.quota_service = quota_service or FakeQuotaService()
     return app
 
 
@@ -174,3 +185,55 @@ def test_save_nonexistent_job_returns_404(client, test_email):
     token = signup(client, test_email).json()["access_token"]
     resp = client.post("/api/try-on/does-not-exist/save", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 404
+
+
+# --- Milestone 11: usage quotas, against the real QuotaService --------------
+#
+# These use a fresh per-test user (via test_email), never the shared `client`
+# fixture's default FakeQuotaService — a brand-new user_id has no prior job
+# history, so this is naturally isolated from other tests/runs without
+# needing any special cleanup, unlike anonymous (IP-based) quota tracking
+# would be. See conftest.py's FakeQuotaService docstring for the reasoning.
+
+
+def test_free_plan_daily_quota_enforced(tmp_path, test_email):
+    with get_session() as session:
+        free_plan = session.get(Plan, "free")
+        daily_limit = free_plan.max_generations_per_day
+    assert daily_limit, "this test needs the free plan to have a real numeric daily cap to test against"
+
+    client = TestClient(make_test_app(tmp_path, quota_service=QuotaService()))
+    token = signup(client, test_email).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    for i in range(daily_limit):
+        resp = _submit(client, headers=headers)
+        assert resp.status_code == 202, f"submission {i + 1}/{daily_limit} should be allowed: {resp.text}"
+
+    over_limit = _submit(client, headers=headers)
+    assert over_limit.status_code == 429
+    assert "generations for today" in over_limit.json()["detail"]
+
+
+def test_usage_endpoint_reflects_consumption(tmp_path, test_email):
+    client = TestClient(make_test_app(tmp_path, quota_service=QuotaService()))
+    token = signup(client, test_email).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    before = client.get("/api/usage/me", headers=headers).json()
+    assert before["plan"] == "free"
+    assert before["used_today"] == 0
+
+    _submit(client, headers=headers)
+
+    after = client.get("/api/usage/me", headers=headers).json()
+    assert after["used_today"] == before["used_today"] + 1
+    if before["remaining_today"] is not None:
+        assert after["remaining_today"] == before["remaining_today"] - 1
+
+
+def test_usage_endpoint_works_anonymously(tmp_path):
+    client = TestClient(make_test_app(tmp_path, quota_service=QuotaService()))
+    resp = client.get("/api/usage/me")
+    assert resp.status_code == 200
+    assert resp.json()["plan"] == "free"

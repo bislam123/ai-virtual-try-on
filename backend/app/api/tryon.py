@@ -11,6 +11,7 @@ from ..core.validation import validate_and_load_image
 from ..db import User
 from ..models.schemas import TryOnJobCreated, TryOnJobStatusResponse
 from ..services.job_store import JobStatus
+from ..services.quota_service import DEFAULT_PLAN_NAME, QuotaService, quota_exceeded_message
 from ..services.rate_limiter import RateLimiter
 from ..services.tryon_service import TryOnService
 
@@ -28,6 +29,10 @@ def get_rate_limiter(request: Request) -> RateLimiter:
     return request.app.state.rate_limiter
 
 
+def get_quota_service(request: Request) -> QuotaService:
+    return request.app.state.quota_service
+
+
 @router.post("", response_model=TryOnJobCreated, status_code=202)
 async def create_try_on_job(
     request: Request,
@@ -40,13 +45,15 @@ async def create_try_on_job(
     seed: int = Form(42),
     service: TryOnService = Depends(get_tryon_service),
     limiter: RateLimiter = Depends(get_rate_limiter),
+    quota_service: QuotaService = Depends(get_quota_service),
     user: Optional[User] = Depends(get_current_user_optional),
 ):
     # Signing in is entirely optional here (brief: don't force an account
     # before the core flow works) — an authenticated request just gets its
     # job attributed to that account, enabling the /save endpoint below, and
     # a fairer per-user rate limit key instead of per-IP.
-    client_key = f"user:{user.id}" if user else f"ip:{request.client.host if request.client else 'unknown'}"
+    client_ip = request.client.host if request.client else "unknown"
+    client_key = f"user:{user.id}" if user else f"ip:{client_ip}"
     limit_result = limiter.check(client_key)
     if not limit_result.allowed:
         raise HTTPException(
@@ -54,6 +61,18 @@ async def create_try_on_job(
             detail=f"Too many try-on requests. Please try again in about {limit_result.retry_after_seconds} seconds.",
             headers={"Retry-After": str(limit_result.retry_after_seconds)},
         )
+
+    # The "Usage quota" stage of User -> Account -> Plan -> Usage quota ->
+    # AI generation (brief sections 4/23) — distinct from the rate limiter
+    # above, which only guards short-burst abuse. See services/quota_service.py.
+    plan_name = user.plan if user else DEFAULT_PLAN_NAME
+    quota_status = quota_service.get_status(
+        user_id=user.id if user else None,
+        client_ip=None if user else client_ip,
+        plan_name=plan_name,
+    )
+    if quota_status.is_exceeded:
+        raise UserFacingError(quota_exceeded_message(quota_status), status_code=429)
 
     if category not in VALID_CATEGORIES:
         raise HTTPException(status_code=400, detail="category must be one of: tops, bottoms, one-pieces.")
@@ -69,7 +88,13 @@ async def create_try_on_job(
             "Please upload a clear product photo instead — support for the other kind is coming soon."
         )
 
-    clamped_steps = max(settings.min_num_timesteps, min(settings.max_num_timesteps, num_timesteps))
+    # Global technical ceiling first, then the plan's own cap (never higher
+    # than the global one — a plan can only restrict further, see
+    # db/models.py's Plan.max_num_timesteps docstring for why this is the
+    # "higher resolution" half of the premium tier rather than a new feature).
+    plan_cap = quota_status.max_num_timesteps
+    effective_max = settings.max_num_timesteps if plan_cap is None else min(settings.max_num_timesteps, plan_cap)
+    clamped_steps = max(settings.min_num_timesteps, min(effective_max, num_timesteps))
 
     person_bytes = await person_image.read()
     garment_bytes = await garment_image.read()
@@ -84,6 +109,7 @@ async def create_try_on_job(
         guidance_scale=settings.default_guidance_scale,
         seed=seed,
         user_id=user.id if user else None,
+        client_ip=client_ip,
     )
     background_tasks.add_task(service.run_job, job.id)
 

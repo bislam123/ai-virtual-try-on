@@ -41,6 +41,7 @@ export default function App() {
         onDismissError={flow.dismissError}
         onSubmit={() => void flow.submit(auth.token)}
         user={auth.user}
+        authToken={auth.token}
         onLogin={auth.login}
         onSignup={auth.signup}
         onLogout={auth.logout}
