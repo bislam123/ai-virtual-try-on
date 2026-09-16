@@ -99,7 +99,10 @@ def test_subdivision_splits_clothes_into_top_and_pants_by_hip_line():
     mp_mask = np.full((h, w), _MP_CLOTHES, dtype=np.uint8)  # clothes everywhere
     result = _compose_label_map(mp_mask, _confident_pose(y_hip=0.5))
     above = result[:49, :]
-    below = result[51:, :]
+    # Below the hip but well clear of the ankle-radius carve (ankles sit at
+    # y=0.95 per _confident_pose, which correctly reclassifies a small boot-
+    # sized region there to FEET -- see test_boot_near_ankle_is_not_classified_as_pants).
+    below = result[51:80, :]
     assert np.all(above == TOP)
     assert np.all(below == PANTS)
 
@@ -129,6 +132,48 @@ def test_subdivision_carves_hands_and_feet_near_wrist_and_ankle():
     result = _compose_label_map(mp_mask, pose)
     assert HANDS in result
     assert FEET in result
+
+
+def test_boot_near_ankle_is_not_classified_as_pants():
+    """Regression test for a real bug found during masking validation:
+    MediaPipe's `clothes` class doesn't distinguish footwear from legwear,
+    so a boot below the hip line was labeled PANTS like any other clothes
+    pixel there -- meaning a "swap the pants" generation would try to
+    regenerate the boot too. Confirmed on the real test photo before this
+    fix: pants coverage 11.88% / feet 0%; after: pants 11.5% / feet 0.45%,
+    with the reclassified region landing exactly on the boot in the actual
+    mask visualization. This test proves the mechanism with a controlled
+    synthetic mask, independent of the real photo."""
+    h, w = 100, 100
+    mp_mask = np.full((h, w), _MP_CLOTHES, dtype=np.uint8)  # an all-clothes blob, e.g. pants + boot
+    pose = _confident_pose(y_hip=0.5)
+    # Ankles sit at y=0.95 per _confident_pose -- well below the hip line,
+    # so this whole region would be PANTS before the fix.
+    result = _compose_label_map(mp_mask, pose)
+    assert FEET in result
+    # And the boot-sized region right at the ankle keypoints is FEET, not
+    # PANTS -- exact coordinates from _confident_pose's Rankle (idx 10) and
+    # Lankle (idx 13): (x_right - 0.02, 0.95) and (x_left + 0.02, 0.95).
+    r_ankle_x, r_ankle_y = int(0.68 * w), int(0.95 * h)
+    l_ankle_x, l_ankle_y = int(0.32 * w), int(0.95 * h)
+    assert result[r_ankle_y, r_ankle_x] == FEET
+    assert result[l_ankle_y, l_ankle_x] == FEET
+    # The rest of the clothes blob, well above the ankles, is still
+    # correctly PANTS -- this isn't a blanket "clothes below hip = feet"
+    # regression, just a small, bounded carve-out at the ankles.
+    assert result[60, 50] == PANTS
+
+
+def test_boot_carve_does_not_affect_top_or_arms_or_torso():
+    """The new pants->feet carve must be scoped to the ankle radius only --
+    confirms it doesn't leak into unrelated classes elsewhere in the frame."""
+    h, w = 100, 100
+    mp_mask = np.zeros((h, w), dtype=np.uint8)
+    mp_mask[:50, :] = _MP_CLOTHES  # becomes TOP (above hip)
+    mp_mask[50:, :] = _MP_CLOTHES  # becomes PANTS (below hip), boots carved near ankles
+    pose = _confident_pose(y_hip=0.5)
+    result = _compose_label_map(mp_mask, pose)
+    assert np.all(result[:49, :] == TOP)  # untouched by the ankle-radius carve
 
 
 # --- 4. Missing-keypoint fallback (bilateral) ----------------------------

@@ -189,6 +189,16 @@ def _compose_label_map(mp_mask: np.ndarray, pose: dict) -> np.ndarray:
                 _carve_at_point(label_map, wrist, w, h, radius_px, xx, yy, from_id=_ARMS, to_id=_HANDS)
     for idx in (_RANKLE, _LANKLE):
         _carve_local(label_map, candidate, subset, idx, radius_px, xx, yy, from_id=_LEGS, to_id=_FEET)
+        # MediaPipe's `clothes` class doesn't distinguish footwear from
+        # legwear, and the geometric top/pants split (above) has no signal
+        # to separate them -- a boot below the hip line gets labeled
+        # _PANTS like any other clothes pixel there. Reclassify _PANTS
+        # pixels near the ankle into _FEET too, same as the _LEGS case
+        # above, so boots aren't swept into "regenerate this as pants".
+        # Bounded by the same radius as the skin case; a knee-high boot's
+        # upper portion can still land as _PANTS -- not a complete fix,
+        # just the smallest safe one for the common case.
+        _carve_local(label_map, candidate, subset, idx, radius_px, xx, yy, from_id=_PANTS, to_id=_FEET)
 
     return label_map
 
