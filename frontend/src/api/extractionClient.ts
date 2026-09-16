@@ -36,3 +36,18 @@ export async function extractProductFromUrl(url: string): Promise<ExtractionOutc
   });
   return outcomeFromResponse(response, "product-from-url.png");
 }
+
+/** Method D's image-handoff path (added alongside Milestone 9's extension
+ * work): POST /api/extract-image-url. Unlike extractProductFromUrl, `url`
+ * here is already a direct product image URL (found by the extension via
+ * the page's own JSON-LD/og:image), not a page to re-scrape, which is
+ * what lets this work against sites whose page route is behind a
+ * CAPTCHA/anti-bot wall. Same request/response shape otherwise. */
+export async function extractProductImageFromUrl(url: string): Promise<ExtractionOutcome> {
+  const response = await apiFetch("/api/extract-image-url", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+  return outcomeFromResponse(response, "product-from-image-url.png");
+}

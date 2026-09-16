@@ -38,6 +38,9 @@ async def lifespan(app: FastAPI):
     app.state.url_extraction_rate_limiter = RateLimiter(
         settings.url_extraction_rate_limit_max_requests, settings.url_extraction_rate_limit_window_seconds
     )
+    app.state.image_url_extraction_rate_limiter = RateLimiter(
+        settings.image_url_extraction_rate_limit_max_requests, settings.image_url_extraction_rate_limit_window_seconds
+    )
     app.state.quota_service = QuotaService()
     logger.info("AI Try-On backend ready.")
     yield

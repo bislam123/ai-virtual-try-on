@@ -62,6 +62,22 @@ class HttpProductPageFetcher(ProductPageFetcher):
         image_bytes = self._get_bytes(image_url, max_bytes=_MAX_IMAGE_BYTES)
         return _decode_image(image_bytes)
 
+    def fetch_image_from_url(self, image_url: str) -> Image.Image:
+        """Download a URL that a caller already knows points at a product
+        image directly (e.g. a browser extension reading a page's own
+        JSON-LD/og:image), skipping robots.txt and HTML/JSON-LD parsing
+        entirely — there is no page to scrape here, just one resource to
+        fetch. Still goes through the same assert_safe_url + manually
+        re-validated redirect chain as every other fetch in this class; see
+        ssrf_guard.py. This exists specifically because a shopping site's
+        page route can be behind an anti-bot/CAPTCHA wall (see
+        fetch_product_image's docstring) while its image CDN host typically
+        is not — that difference is the whole point of this method, not a
+        way around the wall on the page route itself."""
+        assert_safe_url(image_url)
+        image_bytes = self._get_bytes(image_url, max_bytes=_MAX_IMAGE_BYTES)
+        return _decode_image(image_bytes)
+
     # --- robots.txt -----------------------------------------------------
 
     def _check_robots_txt(self, url: str) -> None:

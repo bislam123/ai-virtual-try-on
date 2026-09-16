@@ -28,6 +28,9 @@ class FakePageFetcher(ProductPageFetcher):
             raise ProductExtractionError("We couldn't find a product image on that page.")
         return Image.new("RGB", (300, 400), color="purple")
 
+    def fetch_image_from_url(self, image_url: str) -> Image.Image:
+        raise NotImplementedError("not exercised by this file's tests — see test_extraction_image_url_api.py")
+
 
 @pytest.fixture
 def client(monkeypatch):

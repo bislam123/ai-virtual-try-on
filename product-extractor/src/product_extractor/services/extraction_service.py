@@ -37,3 +37,22 @@ class ExtractionService:
             raise RuntimeError("ExtractionService was constructed without a page_fetcher — extract_from_url unavailable.")
         image = self.page_fetcher.fetch_product_image(url)
         return self.extractor.extract(image)
+
+    def extract_from_image_url(self, url: str) -> ExtractionResult:
+        """Method D's image-handoff path (added alongside Milestone 9's
+        extension work): the caller (a browser extension content script)
+        already knows a direct product image URL — from the same page's
+        own JSON-LD/og:image it used to decide the page was a product
+        page — so there's no HTML page to
+        fetch or parse here, just one image resource. This is what lets
+        Method D work against sites whose page route is behind a CAPTCHA/
+        anti-bot wall that would reject fetch_product_image's page fetch
+        (see http_fetcher.py's fetch_image_from_url docstring): the image
+        CDN host is a different, typically ungated, resource. Same
+        ProductExtractionError contract as extract_from_url."""
+        if self.page_fetcher is None:
+            raise RuntimeError(
+                "ExtractionService was constructed without a page_fetcher — extract_from_image_url unavailable."
+            )
+        image = self.page_fetcher.fetch_image_from_url(url)
+        return self.extractor.extract(image)

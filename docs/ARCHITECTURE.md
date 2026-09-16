@@ -93,17 +93,32 @@ same SaliencyProductExtractor as Method B/C
 
 `POST /api/extract-product-url` accepts a URL, not a file — everything downstream is identical to Method B/C, which is the point of keeping "how do we get an image" (`fetchers/`) separate from "find the product within an image" (`extractors/`). A URL-fetching feature that accepts arbitrary user input is a real SSRF surface — `fetchers/ssrf_guard.py` is the load-bearing security control here (blocks private/loopback/link-local/reserved IP ranges after DNS resolution, re-checked on every redirect, not just the first hop), and it's documented with its own known limitation (check-then-connect, not immune to DNS rebinding) rather than presented as airtight. Never bypasses robots.txt, auth, paywalls, or CAPTCHAs (brief section 7) — any of those, or simply finding no product image, surfaces as the same kind of clear, fallback-pointing error as every other failure mode in this codebase (section 25).
 
-### Method D: browser extension (Milestone 9)
+### Method D: browser extension (Milestone 9, extended)
 
 ```
-extension/content.js (detects a product page, injects a button)
-    ↓ window.open(`${webAppUrl}/?productUrl=<page url>`)
-frontend HomeScreen.tsx (reads ?productUrl= once, strips it, auto-fetches)
-    ↓
-same ExtractionService.extract_from_url() as the "paste a URL" flow
+extension/content.js (detects a product page, shows a "Try It On" panel)
+    ↓ found a direct product image URL on the page (JSON-LD/og:image)?
+    ├─ yes: window.open(`${webAppUrl}/?productImageUrl=<image url>&sourceUrl=<page url>`)
+    │       ↓
+    │   frontend HomeScreen.tsx (reads ?productImageUrl=, strips it, auto-fetches)
+    │       ↓
+    │   ExtractionService.extract_from_image_url(url)
+    │       ↓
+    │   HttpProductPageFetcher.fetch_image_from_url()
+    │       ↓ ssrf_guard.assert_safe_url() -- fetches ONLY that image resource,
+    │         no robots.txt check, no HTML/JSON-LD parsing (there is no page
+    │         to scrape — the extension already read those signals itself)
+    │
+    └─ no (Product schema/OG matched, but no image field): window.open(`${webAppUrl}/?productUrl=<page url>`)
+            ↓ Milestone 9's original path, unchanged
+        frontend HomeScreen.tsx (reads ?productUrl=, strips it, auto-fetches)
+            ↓
+        same ExtractionService.extract_from_url() as the "paste a URL" flow
 ```
 
-No new backend endpoint — this is a new *client* for `POST /api/extract-product-url`, which is the point: "the same backend must work with the web app, the extension, and future mobile integrations" (brief section 8). The extension itself stays deliberately thin (no `host_permissions`, no background service worker, no logic duplicated from the backend's own product-detection) — everything past "here's a URL the user wants to try on" happens in code already built for Milestones 4-8.
+Milestone 9 shipped only the bottom path: a new *client* for `POST /api/extract-product-url`, which is the point of Method D — "the same backend must work with the web app, the extension, and future mobile integrations" (brief section 8). That path re-fetches the shopping site's own page HTML server-side, which fails outright against sites behind an anti-bot wall (verified against a real Flipkart product page: HTTP 403 to any non-browser fetch of the page itself, independent of headers/User-Agent — a reCAPTCHA Enterprise challenge, not a fetcher bug). The project's constraints rule out ever trying to defeat that wall.
+
+This extension update adds the top path instead of trying to work around the wall: the extension already has, in the user's own already-rendered page, the same JSON-LD/`og:image` signals it used to detect the product page in the first place — so it can read a direct image URL and hand the backend *only that resource* to fetch, typically a separate CDN host with no anti-bot gate. `POST /api/extract-image-url` is a new, narrow endpoint alongside the existing one (not a replacement — the page-URL path remains the fallback when no image URL is found), reusing the same `SaliencyProductExtractor`, the same unmodified `ssrf_guard.py`, and its own rate limiter (mirroring `url_extraction_rate_limiter`'s reasoning: still a server-triggered fetch to a caller-influenced host). The extension itself stays deliberately thin (no `host_permissions`, no background service worker, no logic duplicated from the backend's own product-detection; the panel UI is Shadow-DOM-isolated but still pure content-script DOM/CSS/JS) — everything past "here's an image/URL the user wants to try on" happens in code already built for Milestones 4-8.
 
 ## Storage abstraction
 

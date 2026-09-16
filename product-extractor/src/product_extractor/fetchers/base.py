@@ -28,3 +28,11 @@ class ProductExtractionError(Exception):
 class ProductPageFetcher(ABC):
     @abstractmethod
     def fetch_product_image(self, url: str) -> Image.Image: ...
+
+    @abstractmethod
+    def fetch_image_from_url(self, image_url: str) -> Image.Image:
+        """Fetch a URL the caller already knows points directly at a product
+        image (no page to scrape) — see http_fetcher.py's implementation for
+        why this is a separate method rather than a flag on
+        fetch_product_image."""
+        ...

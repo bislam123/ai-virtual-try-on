@@ -192,3 +192,56 @@ def test_unreachable_page_raises_clear_error(monkeypatch):
 
     with pytest.raises(ProductExtractionError, match="couldn't reach that page"):
         fetcher.fetch_product_image("http://example.com/product")
+
+
+# --- HttpProductPageFetcher.fetch_image_from_url (Milestone 9, extended) --
+
+
+def test_fetch_image_from_url_downloads_direct_image(monkeypatch):
+    """No page fetch, no robots.txt check — only the image URL itself is
+    requested. Asserts no request was made to any other route to prove
+    the page-fetch/robots.txt steps are genuinely skipped, not just
+    unused by this particular route table."""
+    requested_urls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_urls.append(str(request.url))
+        return httpx.Response(200, content=_png_bytes(), headers={"content-type": "image/png"})
+
+    monkeypatch.setattr(http_fetcher_module, "assert_safe_url", lambda url: None)
+    transport = httpx.MockTransport(handler)
+
+    def patched_stream(method, url, **kwargs):
+        client = httpx.Client(transport=transport)
+        return client.stream(method, url, **kwargs)
+
+    monkeypatch.setattr(http_fetcher_module.httpx, "stream", patched_stream)
+
+    fetcher = HttpProductPageFetcher()
+    image = fetcher.fetch_image_from_url("https://cdn.example.com/shirt.png")
+    assert image.size == (300, 400)
+    assert requested_urls == ["https://cdn.example.com/shirt.png"]
+
+
+def test_fetch_image_from_url_still_ssrf_guarded():
+    fetcher = HttpProductPageFetcher()
+    with pytest.raises(ProductExtractionError):
+        fetcher.fetch_image_from_url("http://169.254.169.254/latest/meta-data/")
+
+
+def test_fetch_image_from_url_invalid_content_raises_clear_error(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"not an image", headers={"content-type": "text/html"})
+
+    monkeypatch.setattr(http_fetcher_module, "assert_safe_url", lambda url: None)
+    transport = httpx.MockTransport(handler)
+
+    def patched_stream(method, url, **kwargs):
+        client = httpx.Client(transport=transport)
+        return client.stream(method, url, **kwargs)
+
+    monkeypatch.setattr(http_fetcher_module.httpx, "stream", patched_stream)
+
+    fetcher = HttpProductPageFetcher()
+    with pytest.raises(ProductExtractionError, match="couldn't find a product image"):
+        fetcher.fetch_image_from_url("https://cdn.example.com/not-an-image")

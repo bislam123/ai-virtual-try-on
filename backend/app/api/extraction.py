@@ -36,6 +36,10 @@ def get_url_extraction_rate_limiter(request: Request) -> RateLimiter:
     return request.app.state.url_extraction_rate_limiter
 
 
+def get_image_url_extraction_rate_limiter(request: Request) -> RateLimiter:
+    return request.app.state.image_url_extraction_rate_limiter
+
+
 def _check_rate_limit(request: Request, limiter: RateLimiter) -> None:
     client_key = request.client.host if request.client else "unknown"
     limit_result = limiter.check(client_key)
@@ -86,6 +90,31 @@ async def extract_product_url(
     _check_rate_limit(request, limiter)
     try:
         result = _extraction_service.extract_from_url(body.url)
+    except ProductExtractionError as exc:
+        raise UserFacingError(exc.message, status_code=400)
+    return _image_response(result)
+
+
+@router.post("/extract-image-url")
+async def extract_image_url(
+    request: Request,
+    body: ExtractProductUrlRequest,
+    limiter: RateLimiter = Depends(get_image_url_extraction_rate_limiter),
+):
+    """Method D's image-handoff path (added alongside Milestone 9's
+    extension work): the browser extension already found a direct product
+    image URL on the page it's running on
+    (via the page's own JSON-LD/og:image — the same signals it used to
+    decide to show the Try It On control) and sends that URL here instead
+    of the page URL. We fetch only that image resource — never the page
+    itself — which is what lets this work against sites whose page route
+    sits behind a CAPTCHA/anti-bot wall (see extract_product_url above and
+    product-extractor/fetchers/http_fetcher.py's fetch_image_from_url).
+    Same ProductExtractionError -> UserFacingError contract as above; same
+    SSRF guard, unmodified."""
+    _check_rate_limit(request, limiter)
+    try:
+        result = _extraction_service.extract_from_image_url(body.url)
     except ProductExtractionError as exc:
         raise UserFacingError(exc.message, status_code=400)
     return _image_response(result)

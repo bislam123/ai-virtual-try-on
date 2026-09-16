@@ -54,6 +54,13 @@ class Settings(BaseSettings):
     url_extraction_rate_limit_max_requests: int = 20
     url_extraction_rate_limit_window_seconds: int = 600
 
+    # Direct product-image-URL extraction (Method D's image handoff, added
+    # alongside Milestone 9's extension work): also an outbound request to
+    # a caller-chosen host, so it gets the same conservative treatment as
+    # url_extraction above rather than the generous pure-upload one.
+    image_url_extraction_rate_limit_max_requests: int = 20
+    image_url_extraction_rate_limit_window_seconds: int = 600
+
     # --- CORS (frontend origins allowed to call this API) ---
     cors_origins: List[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 

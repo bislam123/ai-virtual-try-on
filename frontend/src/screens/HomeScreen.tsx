@@ -55,21 +55,26 @@ export default function HomeScreen({
   const canSubmit = personImage !== null && garmentImage !== null;
   const [extractionState, setExtractionState] = useState<ExtractionState>({ status: "idle" });
 
-  // Milestone 9: the browser extension hands off a product page by opening
-  // this app with ?productUrl=<page url>. Read it exactly once (a lazy
-  // useState initializer runs only on the very first render — see
-  // ProcessingScreen.tsx for the same pattern) and strip it from the URL
-  // immediately, so returning to this screen later (e.g. "Try Another")
-  // never re-triggers the same fetch.
-  const [initialProductUrl] = useState<string | undefined>(() => {
+  // Milestone 9's browser extension hands off a product by opening this
+  // app with a query param: ?productUrl= originally, and (added in an
+  // extension update) ?productImageUrl= — the more reliable image-handoff
+  // path, see ProductUrlInput's initialImageUrl. Read them exactly once
+  // (a lazy useState initializer runs only on the very first render — see
+  // ProcessingScreen.tsx for the same pattern) and strip all of them from
+  // the URL immediately, so returning to this screen later (e.g. "Try
+  // Another") never re-triggers the same fetch.
+  const [initialGarmentSource] = useState<{ url?: string; imageUrl?: string }>(() => {
     const params = new URLSearchParams(window.location.search);
-    const productUrl = params.get("productUrl");
-    if (productUrl) {
+    const productUrl = params.get("productUrl") ?? undefined;
+    const productImageUrl = params.get("productImageUrl") ?? undefined;
+    if (productUrl || productImageUrl) {
       params.delete("productUrl");
+      params.delete("productImageUrl");
+      params.delete("sourceUrl"); // extension-provided context only; not yet surfaced in the UI
       const newSearch = params.toString();
       window.history.replaceState({}, "", window.location.pathname + (newSearch ? `?${newSearch}` : ""));
     }
-    return productUrl ?? undefined;
+    return { url: productUrl, imageUrl: productImageUrl };
   });
 
   const handleGarmentChange = (file: File | null) => {
@@ -147,7 +152,13 @@ export default function HomeScreen({
           buttons={[{ label: "Upload Clothing" }]}
         />
 
-        {!garmentImage && <ProductUrlInput onExtracted={handleUrlExtracted} initialUrl={initialProductUrl} />}
+        {!garmentImage && (
+          <ProductUrlInput
+            onExtracted={handleUrlExtracted}
+            initialUrl={initialGarmentSource.url}
+            initialImageUrl={initialGarmentSource.imageUrl}
+          />
+        )}
 
         {garmentImage && (
           <div className="flex flex-col gap-1">
