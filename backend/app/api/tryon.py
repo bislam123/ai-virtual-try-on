@@ -110,6 +110,11 @@ async def create_try_on_job(
         seed=seed,
         user_id=user.id if user else None,
         client_ip=client_ip,
+        # Plumbing only -- the rejection above guarantees garment_photo_type
+        # is always "flat-lay" by this point; passing it through (rather
+        # than hardcoding it again here) just completes the threading path
+        # documented in docs/AI_MODEL_LICENSE.md's model-worn investigation.
+        garment_photo_type=garment_photo_type,  # type: ignore[arg-type]
     )
     background_tasks.add_task(service.run_job, job.id)
 

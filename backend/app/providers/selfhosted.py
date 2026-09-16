@@ -25,24 +25,25 @@ class SelfHostedVTONProvider(VirtualTryOnProvider):
 
     def generate(self, request: TryOnRequest) -> TryOnResult:
         with self._lock:
-            # garment_photo_type stays hardcoded to "flat-lay": model-worn garment
-            # extraction was validated separately (see docs/AI_MODEL_LICENSE.md and the
-            # MediaPipeBodyParser/create_garment_image masking it enables) but is not yet
-            # exposed to production traffic — the API layer (backend/app/api/tryon.py)
-            # still rejects any other value before a request reaches here, independent of
-            # this hardcoded default; changing that is a separate, later decision.
+            # garment_photo_type now reads from the request instead of a hardcoded
+            # literal -- pure plumbing, not a behavior change: backend/app/api/tryon.py
+            # still rejects any request whose garment_photo_type isn't "flat-lay" before
+            # it ever reaches here, so request.garment_photo_type is guaranteed to be
+            # "flat-lay" for every real request today. This just completes the threading
+            # path (TryOnRequest -> tryon.py -> TryOnService -> JobStore -> JobRecord ->
+            # here) described in docs/AI_MODEL_LICENSE.md's model-worn investigation, so
+            # enabling "model" later is a one-line change in tryon.py's validation, not a
+            # re-plumbing exercise.
             #
-            # segmentation_free=False (changed from True): real person-image masking via
-            # MediaPipeBodyParser + create_clothing_agnostic_image is now active for every
-            # category (tops/bottoms/one-pieces), validated end-to-end including the boot-
-            # vs-pants classification fix. The old PlaceholderBodyParser-only-safe reasoning
-            # that used to hardcode this to True no longer applies — see
-            # docs/AI_MODEL_LICENSE.md's Stage 1 section for what was actually validated.
+            # segmentation_free=False: real person-image masking via MediaPipeBodyParser +
+            # create_clothing_agnostic_image is active for every category (tops/bottoms/
+            # one-pieces), validated end-to-end including the boot-vs-pants classification
+            # fix. See docs/AI_MODEL_LICENSE.md's Stage 1 section for what was validated.
             output = self._pipeline(
                 person_image=request.person_image,
                 garment_image=request.garment_image,
                 category=request.category,
-                garment_photo_type="flat-lay",
+                garment_photo_type=request.garment_photo_type,
                 segmentation_free=False,
                 num_timesteps=request.num_timesteps,
                 guidance_scale=request.guidance_scale,

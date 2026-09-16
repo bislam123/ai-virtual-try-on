@@ -14,12 +14,20 @@ from PIL import Image
 
 GarmentCategory = Literal["tops", "bottoms", "one-pieces"]
 
+# Plumbing only, per docs/AI_MODEL_LICENSE.md's model-worn investigation --
+# "model" is a legal value at this layer and everywhere it's threaded
+# through below, but backend/app/api/tryon.py still rejects any request
+# that isn't "flat-lay" before one ever reaches here. Not reachable by any
+# real request yet; see that file for the actual enforcement point.
+GarmentPhotoType = Literal["flat-lay", "model"]
+
 
 @dataclass
 class TryOnRequest:
     person_image: Image.Image
     garment_image: Image.Image
     category: GarmentCategory
+    garment_photo_type: GarmentPhotoType
     num_timesteps: int
     guidance_scale: float
     seed: int

@@ -78,6 +78,12 @@ class JobRecord(Base):
     num_timesteps: Mapped[int] = mapped_column(nullable=False)
     guidance_scale: Mapped[float] = mapped_column(nullable=False)
     seed: Mapped[int] = mapped_column(nullable=False)
+    # Plumbing only (see providers/base.py's GarmentPhotoType docstring) --
+    # the API layer (api/tryon.py) rejects anything but "flat-lay" today,
+    # so every row this column is written to has that value. Not nullable,
+    # with a default, so existing rows and any code path that doesn't pass
+    # it explicitly still behave exactly as before this column existed.
+    garment_photo_type: Mapped[str] = mapped_column(String(16), nullable=False, default="flat-lay")
 
     # Privacy requirement (brief section 16): a result is temporary by
     # default and only persists past the TTL sweep if the user explicitly

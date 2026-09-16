@@ -4,7 +4,7 @@ import uuid
 from typing import Optional
 
 from ..db import JobRecord, get_session
-from ..providers.base import GarmentCategory
+from ..providers.base import GarmentCategory, GarmentPhotoType
 from .job_store import Job, JobStatus, JobStore
 
 
@@ -17,6 +17,7 @@ def _to_job(record: JobRecord) -> Job:
         guidance_scale=record.guidance_scale,
         seed=record.seed,
         client_ip=record.client_ip,
+        garment_photo_type=record.garment_photo_type,  # type: ignore[arg-type]
         status=JobStatus(record.status),
         error=record.error,
         saved=record.saved,
@@ -35,6 +36,7 @@ class DbJobStore(JobStore):
         guidance_scale: float,
         seed: int,
         client_ip: Optional[str] = None,
+        garment_photo_type: GarmentPhotoType = "flat-lay",
     ) -> Job:
         record = JobRecord(
             id=uuid.uuid4().hex,
@@ -44,6 +46,7 @@ class DbJobStore(JobStore):
             guidance_scale=guidance_scale,
             seed=seed,
             client_ip=client_ip,
+            garment_photo_type=garment_photo_type,
             status=JobStatus.PENDING.value,
         )
         with get_session() as session:

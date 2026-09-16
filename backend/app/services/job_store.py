@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Dict, Optional
 
-from ..providers.base import GarmentCategory
+from ..providers.base import GarmentCategory, GarmentPhotoType
 
 
 class JobStatus(str, Enum):
@@ -40,6 +40,9 @@ class Job:
     guidance_scale: float
     seed: int
     client_ip: Optional[str] = None  # Milestone 11: anonymous-caller usage-quota tracking
+    # Plumbing only (see providers/base.py's GarmentPhotoType) -- defaults to
+    # "flat-lay", the only value the API layer accepts today.
+    garment_photo_type: GarmentPhotoType = "flat-lay"
     status: JobStatus = JobStatus.PENDING
     error: Optional[str] = None
     saved: bool = False
@@ -58,6 +61,7 @@ class JobStore(ABC):
         guidance_scale: float,
         seed: int,
         client_ip: Optional[str] = None,
+        garment_photo_type: GarmentPhotoType = "flat-lay",
     ) -> Job: ...
 
     @abstractmethod
@@ -84,6 +88,7 @@ class InMemoryJobStore(JobStore):
         guidance_scale: float,
         seed: int,
         client_ip: Optional[str] = None,
+        garment_photo_type: GarmentPhotoType = "flat-lay",
     ) -> Job:
         job = Job(
             id=uuid.uuid4().hex,
@@ -93,6 +98,7 @@ class InMemoryJobStore(JobStore):
             guidance_scale=guidance_scale,
             seed=seed,
             client_ip=client_ip,
+            garment_photo_type=garment_photo_type,
         )
         with self._lock:
             self._jobs[job.id] = job

@@ -12,7 +12,7 @@ from typing import Optional
 from PIL import Image
 
 from ..core.errors import UserFacingError
-from ..providers.base import GarmentCategory, TryOnRequest, VirtualTryOnProvider
+from ..providers.base import GarmentCategory, GarmentPhotoType, TryOnRequest, VirtualTryOnProvider
 from .job_store import Job, JobStatus, JobStore
 from .storage import StorageService
 
@@ -43,6 +43,7 @@ class TryOnService:
         seed: int,
         user_id: Optional[int] = None,
         client_ip: Optional[str] = None,
+        garment_photo_type: GarmentPhotoType = "flat-lay",
     ) -> Job:
         """Create the job record and persist the validated inputs as temp files.
 
@@ -61,6 +62,7 @@ class TryOnService:
             guidance_scale=guidance_scale,
             seed=seed,
             client_ip=client_ip,
+            garment_photo_type=garment_photo_type,
         )
         self.storage.save_temp_upload(job.id, PERSON_FILENAME, _to_png_bytes(person_image))
         self.storage.save_temp_upload(job.id, GARMENT_FILENAME, _to_png_bytes(garment_image))
@@ -84,6 +86,7 @@ class TryOnService:
                 person_image=Image.open(io.BytesIO(person_bytes)).convert("RGB"),
                 garment_image=Image.open(io.BytesIO(garment_bytes)).convert("RGB"),
                 category=job.category,
+                garment_photo_type=job.garment_photo_type,
                 num_timesteps=job.num_timesteps,
                 guidance_scale=job.guidance_scale,
                 seed=job.seed,

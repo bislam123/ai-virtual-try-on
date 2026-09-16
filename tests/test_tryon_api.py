@@ -114,6 +114,33 @@ def test_rejects_unsupported_garment_photo_type(tmp_path):
     assert "plain clothing" in resp.json()["detail"]
 
 
+def test_flat_lay_garment_photo_type_reaches_the_provider(tmp_path):
+    """Plumbing test (see docs/AI_MODEL_LICENSE.md's model-worn
+    investigation): garment_photo_type is threaded all the way from the
+    HTTP request through TryOnService/JobStore/JobRecord to whatever
+    VirtualTryOnProvider.generate() actually receives -- proven here via a
+    capturing FakeProvider, not just reasoned about. "model" itself is
+    still rejected before any of this (see the test above, unchanged) --
+    this only confirms the one value the API does accept flows through
+    correctly end to end."""
+
+    class CapturingProvider(VirtualTryOnProvider):
+        def __init__(self):
+            self.received_request = None
+
+        def generate(self, request: TryOnRequest) -> TryOnResult:
+            self.received_request = request
+            return TryOnResult(image=Image.new("RGB", (64, 64), color="red"))
+
+    provider = CapturingProvider()
+    client = TestClient(make_test_app(tmp_path, provider=provider))
+
+    resp = _submit(client)  # default garment_photo_type ("flat-lay")
+    assert resp.status_code == 202, resp.text
+    assert provider.received_request is not None
+    assert provider.received_request.garment_photo_type == "flat-lay"
+
+
 def test_rejects_invalid_category(tmp_path):
     client = TestClient(make_test_app(tmp_path))
     resp = _submit(client, category="shoes")
