@@ -8,9 +8,15 @@ from typing import List, Literal, Optional
 import cv2
 import numpy as np
 import torch
-# AI Try-On project: swapped `fashn_human_parser` (NVIDIA non-commercial license) for our
-# own commercially-clean placeholder. See docs/AI_MODEL_LICENSE.md.
-from aitryon_bodyparser import CATEGORY_TO_BODY_COVERAGE, PlaceholderBodyParser
+# AI Try-On project: swapped `fashn_human_parser` (NVIDIA non-commercial license) for
+# our own commercially-clean replacement (MediaPipe + DWPose-derived geometric
+# subdivision, Stage 1 -- see docs/AI_MODEL_LICENSE.md). PlaceholderBodyParser is kept
+# importable as a fallback/test double but is no longer constructed by default below.
+# MediaPipeBodyParser itself is imported lazily inside _setup_hp_model, not here at
+# module load time: aitryon_preprocessing imports fashn_vton.dwpose, and fashn_vton's
+# own __init__.py eagerly imports this module -- a top-level import here would be a
+# genuine circular import (fashn_vton -> aitryon_preprocessing -> fashn_vton).
+from aitryon_bodyparser import CATEGORY_TO_BODY_COVERAGE, PlaceholderBodyParser  # noqa: F401
 from PIL import Image
 from tqdm.auto import tqdm
 
@@ -136,13 +142,23 @@ class TryOnPipeline:
         self.logger.info("DWPose loaded")
 
     def _setup_hp_model(self):
-        """Load human parsing model (commercially-clean placeholder, see docs/AI_MODEL_LICENSE.md)."""
-        self.logger.info("Loading PlaceholderBodyParser")
+        """Load human parsing model (MediaPipe + DWPose Stage 1, see docs/AI_MODEL_LICENSE.md)."""
+        from aitryon_preprocessing import MediaPipeBodyParser  # see import note at top of file
+
+        dwpose_dir = os.path.join(self.weights_dir, "dwpose")
+        # Sibling of weights_dir (ai/models/<name>/) rather than nested under it,
+        # since this model is shared infrastructure, not part of the FASHN weights.
+        mediapipe_model_path = os.path.join(
+            os.path.dirname(self.weights_dir), "mediapipe", "selfie_multiclass_256x256.tflite"
+        )
+        self.logger.info(f"Loading MediaPipeBodyParser from {mediapipe_model_path}")
 
         hp_device = "cuda" if self.device.type == "cuda" else "cpu"
-        self.hp_model = PlaceholderBodyParser(device=hp_device)
+        self.hp_model = MediaPipeBodyParser(
+            model_path=mediapipe_model_path, dwpose_checkpoints_dir=dwpose_dir, device=hp_device
+        )
 
-        self.logger.info("PlaceholderBodyParser loaded")
+        self.logger.info("MediaPipeBodyParser loaded")
 
     @torch.inference_mode()
     def _sample(

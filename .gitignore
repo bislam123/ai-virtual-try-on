@@ -11,6 +11,7 @@ ai/models/**/*.safetensors
 ai/models/**/*.pth
 ai/models/**/*.onnx
 ai/models/**/*.bin
+ai/models/**/*.tflite
 ai/checkpoints/
 ai/.cache/
 huggingface_cache/

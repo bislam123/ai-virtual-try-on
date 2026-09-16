@@ -2,7 +2,7 @@
 
 This file is the single source of truth for which AI models AI Try-On uses at runtime, and why each one is legally safe for commercial use. It must be kept up to date any time a model or preprocessing component changes.
 
-**Last reviewed:** 2026-09-15 (Milestone 1)
+**Last reviewed:** 2026-09-16 (segmentation replacement, Stage 1: MediaPipe + DWPose)
 **Reviewed by:** Claude Code, at the direction of the project owner
 
 ---
@@ -50,13 +50,34 @@ FASHN VTON v1.5's reference pipeline (`src/fashn_vton/pipeline.py`) unconditiona
 
 That is an explicit third-party non-commercial restriction — confirmed by reading `fashn-human-parser`'s own `LICENSE` file, which states it "inherits the NVIDIA Source Code License for SegFormer." **This component cannot be used in a commercial deployment.**
 
-**Resolution:** AI Try-On does not install or call `fashn-human-parser`. It is replaced with a commercially-licensed body/garment segmentation model performing the equivalent role (producing the label map `pipeline.py` expects from `hp_model.predict()`):
+**Resolution — Stage 1, implemented:** AI Try-On does not install or call `fashn-human-parser`. `PlaceholderBodyParser` (still present, `ai/vendor/aitryon-bodyparser/`, kept as a fallback/test double) has been replaced as the pipeline's default human-parsing model by `MediaPipeBodyParser` (`ai/preprocessing/`), which combines two independently-licensed, verified commercially-clean models:
 
 | | |
 |---|---|
-| Replacement | U2Net-based cloth/body segmentation (Apache-2.0/MIT forks of `xuebinqin/U-2-Net`, base repo Apache-2.0 — verified) — or Meta's Segment Anything 2 (Apache-2.0, verified) if finer garment boundaries are needed |
+| Component | Google MediaPipe Image Segmenter — `selfie_multiclass_256x256` |
+| Source | https://ai.google.dev/edge/mediapipe/solutions/vision/image_segmenter (Google AI Edge / MediaPipe Solutions); weight file downloaded from `https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite` |
+| Code license | Apache-2.0 (MediaPipe framework and Python package, `mediapipe` on PyPI — verified via the package's own wheel metadata) |
+| Model license | Apache-2.0 — Google-trained on Google's own data, **not** a fine-tune of a third-party academic dataset (unlike the rejected U2Net path below), so there's no inherited-dataset licensing ambiguity to track |
 | Commercial use | Permitted |
-| Integration | See `ai/preprocessing/` — a thin adapter maps our segmentation model's output to the label schema (`CATEGORY_TO_BODY_COVERAGE`, `FASHN_LABELS_TO_IDS`) that the rest of the FASHN pipeline expects, so the generative model and DWPose are used unmodified. |
+| Role | Primary segmentation: background / hair / body-skin / face-skin / clothes / other (6 classes) |
+| Weight storage | `ai/models/mediapipe/selfie_multiclass_256x256.tflite` — downloaded once, gitignored (`ai/models/**/*.tflite`), same "download once, run locally forever after, no runtime network dependency" pattern already used for the FASHN and DWPose weights |
+
+| | |
+|---|---|
+| Component | DWPose (already documented above — reused, not a new dependency) |
+| Role | Provides body keypoints (shoulder/hip/wrist/ankle) used only to *geometrically subdivide* MediaPipe's coarse `body-skin`/`clothes` classes into the finer classes `preprocessing/agnostic.py` expects (`torso`/`arms`/`hands`/`legs`/`feet`, `top`/`pants`). Never used to classify *what* something is beyond that geometry — the API's own `category` field already carries that information downstream. |
+
+**Candidates investigated and explicitly rejected for this role:**
+
+| Candidate | Verdict |
+|---|---|
+| U2Net cloth segmentation (`levindabhi/cloth-segmentation`) | Code MIT, but its checkpoint is trained on the iMaterialist Fashion 2019/FGVC6 Kaggle dataset, whose terms restrict use to "non-commercial research and educational purposes" (verified via the competition's own rules page). Same disqualifying pattern as SCHP/LIP-ATR/SegFormer above — a permissive code license does not launder a non-commercial training-data restriction. Not used. |
+| SCHP / LIP-ATR-family human parsers | Academic-dataset-trained (LIP/ATR/CIHP), same non-commercial pattern; not investigated further given the established precedent above. |
+| Meta Segment Anything 2 (SAM 2 / 2.1) | Apache-2.0, code and weights — genuinely commercially clean, and would remain a valid option. **Deliberately deferred, not rejected** — SAM2 is a promptable, class-agnostic segmenter (would need prompts derived from DWPose geometry, more integration work for uncertain quality gain over the Stage 1 approach). Stage 1 does not use it. A candidate Stage 2. |
+
+**Known Stage 1 limitations, carried forward on purpose** (see `ai/preprocessing/src/aitryon_preprocessing/mediapipe_parser.py`'s own docstring for the full reasoning): the `top`/`pants` split is a single horizontal line through the hip keypoints — validated against a real seated/bent-knee test photo where it held up, but a pose with a knee raised above hip height (crossed legs, hugging a knee) would misclassify that region; and `dress`/`skirt`/`belt`/`scarf`/`bag`/`hat`/`glasses`/`jewelry` are permanently unused label ids in Stage 1 (verified against the actual consuming code in `agnostic.py` that this is safe — those ids only ever appear in identity-*exclusion* sets, never in anything actively masked, so leaving them unused degrades gracefully rather than breaking).
+
+**Not yet activated:** `segmentation_free=True` and `garment_photo_type="flat-lay"` remain hardcoded in `backend/app/providers/selfhosted.py` (unchanged by this work) — so on every current request, `MediaPipeBodyParser`'s output is computed but still discarded, identically to how `PlaceholderBodyParser`'s was. This is intentional: Stage 1 makes a real parser available and tested, it does not yet turn on masked-mode or model-worn-garment-photo support.
 
 ---
 

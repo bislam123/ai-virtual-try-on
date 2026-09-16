@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aitryon-preprocessing"
+version = "0.1.0"
+description = "AI Try-On's real, commercially-clean body/garment segmentation model (Stage 1: MediaPipe + DWPose-derived geometric subdivision)."
+license = { text = "MIT" }
+authors = [{ name = "AI Try-On project" }]
+requires-python = ">=3.10"
+dependencies = [
+    "mediapipe>=1.0.0",
+    "numpy>=1.21.0",
+]
+
+# NOTE: this package also imports fashn_vton.dwpose (for keypoints) and
+# aitryon_bodyparser (for the label id schema) at runtime, but does not list
+# them as formal dependencies here -- matching this project's existing
+# convention (see ai/vendor/fashn-vton-1.5/pyproject.toml's own comment):
+# these local packages are installed side-by-side into the same venv via
+# separate `pip install -e` steps documented in docs/DEVELOPMENT.md, not
+# cross-declared as pip dependencies of each other.
+#
+# mediapipe's own declared dependency is `opencv-contrib-python` (verified
+# from its wheel metadata before installing), not the plain `opencv-python`
+# this project already avoids having installed alongside opencv-contrib --
+# so no OpenCV package conflict here.
+
+[tool.setuptools.packages.find]
+where = ["src"]
