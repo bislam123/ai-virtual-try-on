@@ -139,11 +139,20 @@ def _compose_label_map(mp_mask: np.ndarray, pose: dict) -> np.ndarray:
     body_skin = mp_mask == _MP_BODY_SKIN
     clothes = mp_mask == _MP_CLOTHES
 
-    candidate, subset = _extract_body_keypoints(pose)
-    y_shoulder = _line_y(candidate, subset, _RSHOULDER, _LSHOULDER, h)
-    y_hip = _line_y(candidate, subset, _RHIP, _LHIP, h)
-    x_range_shoulder = _line_x_range(candidate, subset, _RSHOULDER, _LSHOULDER, w)
-    x_range_hip = _line_x_range(candidate, subset, _RHIP, _LHIP, w)
+    try:
+        candidate, subset = _extract_body_keypoints(pose)
+        y_shoulder = _line_y(candidate, subset, _RSHOULDER, _LSHOULDER, h)
+        y_hip = _line_y(candidate, subset, _RHIP, _LHIP, h)
+        x_range_shoulder = _line_x_range(candidate, subset, _RSHOULDER, _LSHOULDER, w)
+        x_range_hip = _line_x_range(candidate, subset, _RHIP, _LHIP, w)
+    except (IndexError, ValueError, TypeError, KeyError):
+        # Malformed/unexpected pose data (e.g. a truncated keypoint array)
+        # -- degrade exactly like "no person detected" rather than letting
+        # this propagate. This is what makes predict()'s "never raises"
+        # promise hold even when the pose input itself is broken, not just
+        # empty (the already-tested get_dummy_dw_keypoints() case).
+        candidate = subset = None
+        y_shoulder = y_hip = x_range_shoulder = x_range_hip = None
 
     yy, xx = np.mgrid[0:h, 0:w]
 
@@ -178,27 +187,38 @@ def _compose_label_map(mp_mask: np.ndarray, pose: dict) -> np.ndarray:
         label_map[body_skin] = _TORSO
 
     # --- hands / feet: locally override arms / legs near wrist/ankle -
-    radius_px = _LIMB_CARVE_RADIUS_FRAC * h
-    for idx in (_RWRIST, _LWRIST):
-        _carve_local(label_map, candidate, subset, idx, radius_px, xx, yy, from_id=_ARMS, to_id=_HANDS)
-    hands_kpts = pose.get("hands")
-    if hands_kpts is not None and np.size(hands_kpts):
-        for hand in np.asarray(hands_kpts):
-            wrist = hand[0]
-            if wrist[0] >= 0:
-                _carve_at_point(label_map, wrist, w, h, radius_px, xx, yy, from_id=_ARMS, to_id=_HANDS)
-    for idx in (_RANKLE, _LANKLE):
-        _carve_local(label_map, candidate, subset, idx, radius_px, xx, yy, from_id=_LEGS, to_id=_FEET)
-        # MediaPipe's `clothes` class doesn't distinguish footwear from
-        # legwear, and the geometric top/pants split (above) has no signal
-        # to separate them -- a boot below the hip line gets labeled
-        # _PANTS like any other clothes pixel there. Reclassify _PANTS
-        # pixels near the ankle into _FEET too, same as the _LEGS case
-        # above, so boots aren't swept into "regenerate this as pants".
-        # Bounded by the same radius as the skin case; a knee-high boot's
-        # upper portion can still land as _PANTS -- not a complete fix,
-        # just the smallest safe one for the common case.
-        _carve_local(label_map, candidate, subset, idx, radius_px, xx, yy, from_id=_PANTS, to_id=_FEET)
+    # Skipped entirely if candidate/subset are unavailable (the malformed-
+    # pose fallback above) -- there's nothing valid to carve from, same
+    # reasoning as the coarse body-skin/clothes fallbacks.
+    if candidate is not None and subset is not None:
+        radius_px = _LIMB_CARVE_RADIUS_FRAC * h
+        for idx in (_RWRIST, _LWRIST):
+            _carve_local(label_map, candidate, subset, idx, radius_px, xx, yy, from_id=_ARMS, to_id=_HANDS)
+        hands_kpts = pose.get("hands")
+        if hands_kpts is not None and np.size(hands_kpts):
+            try:
+                for hand in np.asarray(hands_kpts):
+                    wrist = hand[0]
+                    if wrist[0] >= 0:
+                        _carve_at_point(label_map, wrist, w, h, radius_px, xx, yy, from_id=_ARMS, to_id=_HANDS)
+            except (IndexError, TypeError, ValueError):
+                # This carve is purely supplementary to the body-18 wrist
+                # carve just above -- a malformed hands array shouldn't
+                # affect anything already correctly computed this call.
+                pass
+        for idx in (_RANKLE, _LANKLE):
+            _carve_local(label_map, candidate, subset, idx, radius_px, xx, yy, from_id=_LEGS, to_id=_FEET)
+            # MediaPipe's `clothes` class doesn't distinguish footwear from
+            # legwear, and the geometric top/pants split (above) has no
+            # signal to separate them -- a boot below the hip line gets
+            # labeled _PANTS like any other clothes pixel there. Reclassify
+            # _PANTS pixels near the ankle into _FEET too, same as the
+            # _LEGS case above, so boots aren't swept into "regenerate this
+            # as pants". Bounded by the same radius as the skin case; a
+            # knee-high boot's upper portion can still land as _PANTS --
+            # not a complete fix, just the smallest safe one for the
+            # common case.
+            _carve_local(label_map, candidate, subset, idx, radius_px, xx, yy, from_id=_PANTS, to_id=_FEET)
 
     return label_map
 
@@ -212,15 +232,28 @@ def _extract_body_keypoints(pose: dict):
     return candidate, subset
 
 
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
 def _line_y(candidate, subset, idx_a: int, idx_b: int, h: int) -> Optional[float]:
     """Bilateral fallback: average both sides if both are confidently
-    detected, else use whichever single side is, else None."""
-    ys = [candidate[i][1] * h for i in (idx_a, idx_b) if subset[i] >= 0]
+    detected, else use whichever single side is, else None. Clamped to
+    [0,1] before scaling: confidence (subset[i] >= 0) says nothing about
+    whether the coordinate itself is sane -- a keypoint right at or beyond
+    a cropped frame edge already degrades the top/pants (or torso/arms/
+    legs) split to one class either way (that's an acceptable, expected
+    edge case, not a bug), but a genuinely wild/invalid value (NaN, a
+    corrupted large number) could still reach here from a future pose
+    source with different guarantees than today's DWPose. Clamping bounds
+    it to a predictable range rather than letting an arbitrary value flow
+    into pixel-space math unchecked."""
+    ys = [_clamp01(candidate[i][1]) * h for i in (idx_a, idx_b) if subset[i] >= 0]
     return float(np.mean(ys)) if ys else None
 
 
 def _line_x_range(candidate, subset, idx_a: int, idx_b: int, w: int):
-    xs = [candidate[i][0] * w for i in (idx_a, idx_b) if subset[i] >= 0]
+    xs = [_clamp01(candidate[i][0]) * w for i in (idx_a, idx_b) if subset[i] >= 0]
     return (min(xs), max(xs)) if xs else None
 
 

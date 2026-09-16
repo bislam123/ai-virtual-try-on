@@ -236,6 +236,66 @@ def test_missing_bodies_key_does_not_raise():
     assert np.all(result == TORSO)
 
 
+def test_truncated_keypoint_array_does_not_raise_and_falls_back_coarsely():
+    """Hardening regression: candidate/subset shorter than the 18 entries
+    every index constant (_RHIP=8, _LANKLE=13, etc.) assumes used to raise
+    IndexError straight out of predict() -- a real gap, not hypothetical,
+    since nothing upstream guarantees pose["bodies"]["candidate"] always
+    has exactly 18 rows. Now caught and degraded exactly like "no person
+    detected"."""
+    h, w = 50, 50
+    mp_mask = np.zeros((h, w), dtype=np.uint8)
+    mp_mask[:25, :] = _MP_CLOTHES
+    mp_mask[25:, :] = _MP_BODY_SKIN
+    truncated_pose = {
+        "bodies": {
+            "candidate": np.zeros((5, 2)),  # far short of the 18 rows indices like _RHIP=8 need
+            "subset": np.zeros((1, 5)),
+        }
+    }
+    result = _compose_label_map(mp_mask, truncated_pose)  # must not raise
+    assert result.shape == (h, w)
+    used = set(np.unique(result).tolist())
+    assert used.issubset({BG, TOP, TORSO})  # same coarse fallback as the dummy-pose case
+
+
+def test_malformed_hands_array_does_not_raise_and_preserves_other_classes():
+    """Hardening regression: a hands array with an unexpected shape used to
+    raise inside the supplementary hands carve -- discarding the
+    already-correctly-computed torso/arms/legs split from earlier in the
+    same call, not just skipping the hands refinement itself."""
+    h, w = 100, 100
+    mp_mask = np.full((h, w), _MP_BODY_SKIN, dtype=np.uint8)
+    pose = _confident_pose()
+    pose["hands"] = np.array([1, 2, 3])  # wrong shape: no per-hand 21-point structure
+    result = _compose_label_map(mp_mask, pose)  # must not raise
+    assert result.shape == (h, w)
+    # The body-18 wrist/ankle carving (unaffected by the malformed hands
+    # array) still ran correctly.
+    assert {TORSO, ARMS, LEGS}.issubset(set(np.unique(result).tolist()))
+
+
+def test_wildly_out_of_range_hip_coordinate_is_bounded_not_unbounded():
+    """Hardening regression for _clamp01: confidence (subset[i] >= 0) says
+    nothing about whether a coordinate is sane. A hip keypoint at or beyond
+    the frame edge (y_norm >= 1.0) already collapses the top/pants split to
+    a single class regardless of clamping -- that's an expected, acceptable
+    degenerate case (the person's hip genuinely isn't well inside the
+    frame), not something this fix changes or needs to change. What the
+    clamp actually guards is a wildly invalid value (here, 50x the frame
+    height) still producing a valid, bounded, non-crashing result instead
+    of an arbitrary unbounded one flowing into the pixel-space comparisons."""
+    h, w = 100, 100
+    mp_mask = np.full((h, w), _MP_CLOTHES, dtype=np.uint8)
+    pose = _confident_pose(y_hip=50.0)  # "confidently detected", but a wildly invalid coordinate
+    result = _compose_label_map(mp_mask, pose)  # must not raise, must stay in-schema
+    assert result.shape == (h, w)
+    assert set(np.unique(result).tolist()).issubset(set(range(18)))
+    # Same, expected degenerate outcome as any at-or-past-the-edge hip: one
+    # consistent class, not a crash and not a mix of nonsensical values.
+    assert set(np.unique(result).tolist()) == {TOP}
+
+
 # --- 6. Real-image integration sanity check -------------------------------
 
 
