@@ -267,18 +267,23 @@ def test_real_garment_photo_does_not_raise(real_parser):
     assert result.dtype == np.int64
 
 
-# --- 7. Regression: segmentation_free=True + flat-lay path is unaffected --
+# --- 7. Regression: disable_masking=True is a genuine no-op, either way --
 
 
 def test_disable_masking_path_ignores_seg_pred_content_entirely():
-    """The actual safety net for this whole change: backend/app/providers/
-    selfhosted.py hardcodes segmentation_free=True and garment_photo_type=
-    "flat-lay" for every request today (unchanged by this work). Both of
-    fashn_vton's preprocessing functions short-circuit to `return img_np`
-    unchanged whenever disable_masking=True -- so the *content* of seg_pred
-    (constant all-background from PlaceholderBodyParser vs. a real
-    multi-class map from MediaPipeBodyParser) can never affect output on
-    that path. Proven directly here, not just reasoned about."""
+    """A general correctness property of fashn_vton's preprocessing
+    functions, proven directly rather than just reasoned about: both
+    create_clothing_agnostic_image and create_garment_image short-circuit
+    to `return img_np` unchanged whenever disable_masking=True, regardless
+    of seg_pred's content (constant all-background from
+    PlaceholderBodyParser vs. a real multi-class map from
+    MediaPipeBodyParser). This was the safety net proving the original
+    Stage 1 parser swap was a no-op while backend/app/providers/
+    selfhosted.py still hardcoded segmentation_free=True; it's kept as a
+    contract test now that production has moved to segmentation_free=False
+    (real person-image masking) because garment_photo_type="flat-lay" is
+    still hardcoded there, so create_garment_image's disable_masking=True
+    path remains live in production for the garment image specifically."""
     from fashn_vton.preprocessing.agnostic import create_clothing_agnostic_image, create_garment_image
 
     rng = np.random.default_rng(42)
