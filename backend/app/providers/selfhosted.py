@@ -25,15 +25,14 @@ class SelfHostedVTONProvider(VirtualTryOnProvider):
 
     def generate(self, request: TryOnRequest) -> TryOnResult:
         with self._lock:
-            # garment_photo_type now reads from the request instead of a hardcoded
-            # literal -- pure plumbing, not a behavior change: backend/app/api/tryon.py
-            # still rejects any request whose garment_photo_type isn't "flat-lay" before
-            # it ever reaches here, so request.garment_photo_type is guaranteed to be
-            # "flat-lay" for every real request today. This just completes the threading
-            # path (TryOnRequest -> tryon.py -> TryOnService -> JobStore -> JobRecord ->
-            # here) described in docs/AI_MODEL_LICENSE.md's model-worn investigation, so
-            # enabling "model" later is a one-line change in tryon.py's validation, not a
-            # re-plumbing exercise.
+            # garment_photo_type reads from the request rather than a hardcoded literal:
+            # backend/app/api/tryon.py now accepts both "flat-lay" and "model"
+            # (VALID_GARMENT_PHOTO_TYPES) and rejects anything else, so
+            # request.garment_photo_type is one of those two values for every real
+            # request. See docs/AI_MODEL_LICENSE.md's model-worn investigation and
+            # validation for what makes "model" safe: real segmentation via
+            # MediaPipeBodyParser, the same create_garment_image masking already used
+            # for the person-image side, validated end-to-end for every category.
             #
             # segmentation_free=False: real person-image masking via MediaPipeBodyParser +
             # create_clothing_agnostic_image is active for every category (tops/bottoms/

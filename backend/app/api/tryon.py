@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/try-on", tags=["try-on"])
 
 VALID_CATEGORIES = {"tops", "bottoms", "one-pieces"}
+VALID_GARMENT_PHOTO_TYPES = {"flat-lay", "model"}
 
 
 def get_tryon_service(request: Request) -> TryOnService:
@@ -40,7 +41,7 @@ async def create_try_on_job(
     person_image: UploadFile = File(..., description="Photo of the person"),
     garment_image: UploadFile = File(..., description="Photo of the clothing item (plain product photo)"),
     category: str = Form(..., description="tops | bottoms | one-pieces"),
-    garment_photo_type: str = Form("flat-lay", description="Only 'flat-lay' is supported today"),
+    garment_photo_type: str = Form("flat-lay", description="flat-lay | model"),
     num_timesteps: int = Form(settings.default_num_timesteps),
     seed: int = Form(42),
     service: TryOnService = Depends(get_tryon_service),
@@ -77,15 +78,16 @@ async def create_try_on_job(
     if category not in VALID_CATEGORIES:
         raise HTTPException(status_code=400, detail="category must be one of: tops, bottoms, one-pieces.")
 
-    # We only support plain product/garment photos right now — see
-    # ai/vendor/aitryon-bodyparser's parser.py for exactly why "model" (garment
-    # worn by another person) isn't safe yet, and docs/AI_MODEL_LICENSE.md for
-    # the licensing reason a real segmentation model isn't wired in yet.
-    if garment_photo_type != "flat-lay":
+    # "model" (garment worn by another person) is now supported alongside
+    # "flat-lay" -- see docs/AI_MODEL_LICENSE.md's model-worn investigation
+    # and validation for what makes this safe: real segmentation via
+    # MediaPipeBodyParser (Apache-2.0, commercially clean), the same
+    # create_garment_image masking already used for the person-image side,
+    # validated end to end for every category (tops/bottoms/one-pieces).
+    if garment_photo_type not in VALID_GARMENT_PHOTO_TYPES:
         raise UserFacingError(
-            "We currently support plain clothing/product photos only "
-            "(not photos of the item worn by another person). "
-            "Please upload a clear product photo instead — support for the other kind is coming soon."
+            "We support plain clothing/product photos or photos of the item "
+            "worn by a person. Please upload one of those instead."
         )
 
     # Global technical ceiling first, then the plan's own cap (never higher
@@ -110,10 +112,6 @@ async def create_try_on_job(
         seed=seed,
         user_id=user.id if user else None,
         client_ip=client_ip,
-        # Plumbing only -- the rejection above guarantees garment_photo_type
-        # is always "flat-lay" by this point; passing it through (rather
-        # than hardcoding it again here) just completes the threading path
-        # documented in docs/AI_MODEL_LICENSE.md's model-worn investigation.
         garment_photo_type=garment_photo_type,  # type: ignore[arg-type]
     )
     background_tasks.add_task(service.run_job, job.id)

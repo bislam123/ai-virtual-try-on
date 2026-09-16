@@ -37,6 +37,19 @@ class BrokenProvider(VirtualTryOnProvider):
         raise RuntimeError("simulated model failure with a sensitive internal detail")
 
 
+class CapturingProvider(VirtualTryOnProvider):
+    """Records the TryOnRequest it received instead of generating anything
+    -- used to prove what actually reaches the provider layer, not just
+    what the API layer claims to accept."""
+
+    def __init__(self):
+        self.received_request = None
+
+    def generate(self, request: TryOnRequest) -> TryOnResult:
+        self.received_request = request
+        return TryOnResult(image=Image.new("RGB", (64, 64), color="red"))
+
+
 def make_test_app(tmp_path, provider=None, rate_limit=1000, quota_service=None):
     app = FastAPI()
     configure_exception_handlers(app)
@@ -108,30 +121,21 @@ def test_rejects_oversized_upload(tmp_path, monkeypatch):
 
 
 def test_rejects_unsupported_garment_photo_type(tmp_path):
+    """"flat-lay" and "model" are the only two valid values (see
+    VALID_GARMENT_PHOTO_TYPES) -- anything else is still rejected exactly
+    as before this milestone's model-worn activation."""
     client = TestClient(make_test_app(tmp_path))
-    resp = _submit(client, garment_photo_type="model")
+    resp = _submit(client, garment_photo_type="worn-by-a-cat")
     assert resp.status_code == 400
     assert "plain clothing" in resp.json()["detail"]
 
 
 def test_flat_lay_garment_photo_type_reaches_the_provider(tmp_path):
-    """Plumbing test (see docs/AI_MODEL_LICENSE.md's model-worn
+    """Plumbing proof (see docs/AI_MODEL_LICENSE.md's model-worn
     investigation): garment_photo_type is threaded all the way from the
     HTTP request through TryOnService/JobStore/JobRecord to whatever
-    VirtualTryOnProvider.generate() actually receives -- proven here via a
-    capturing FakeProvider, not just reasoned about. "model" itself is
-    still rejected before any of this (see the test above, unchanged) --
-    this only confirms the one value the API does accept flows through
-    correctly end to end."""
-
-    class CapturingProvider(VirtualTryOnProvider):
-        def __init__(self):
-            self.received_request = None
-
-        def generate(self, request: TryOnRequest) -> TryOnResult:
-            self.received_request = request
-            return TryOnResult(image=Image.new("RGB", (64, 64), color="red"))
-
+    VirtualTryOnProvider.generate() actually receives, via a capturing
+    provider rather than just reasoning about the code."""
     provider = CapturingProvider()
     client = TestClient(make_test_app(tmp_path, provider=provider))
 
@@ -139,6 +143,20 @@ def test_flat_lay_garment_photo_type_reaches_the_provider(tmp_path):
     assert resp.status_code == 202, resp.text
     assert provider.received_request is not None
     assert provider.received_request.garment_photo_type == "flat-lay"
+
+
+def test_model_garment_photo_type_is_accepted_and_reaches_the_provider(tmp_path):
+    """Model-worn activation: "model" is now a legal value, accepted (202,
+    not 400) and threaded through to the provider exactly like "flat-lay"
+    -- same plumbing, same capturing-provider proof technique as the test
+    above."""
+    provider = CapturingProvider()
+    client = TestClient(make_test_app(tmp_path, provider=provider))
+
+    resp = _submit(client, garment_photo_type="model")
+    assert resp.status_code == 202, resp.text
+    assert provider.received_request is not None
+    assert provider.received_request.garment_photo_type == "model"
 
 
 def test_rejects_invalid_category(tmp_path):
