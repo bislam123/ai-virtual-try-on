@@ -90,6 +90,25 @@ class Settings(BaseSettings):
     image_url_extraction_rate_limit_max_requests: int = 20
     image_url_extraction_rate_limit_window_seconds: int = 600
 
+    # Auth (login/signup) is a materially different threat profile than the
+    # limits above -- a high-value target for automated credential-stuffing
+    # and brute-force, not just cost/abuse protection -- so it gets its own,
+    # deliberately tighter limits, applied per api/auth.py's own dual-key
+    # strategy (see that module for why): a per-IP limit (catches one
+    # source hammering many accounts) and, for login specifically, an
+    # additional per-account limit (catches one account being brute-forced
+    # from many/rotating IPs -- a per-IP limit alone can't catch that).
+    auth_login_ip_rate_limit_max_requests: int = 10
+    auth_login_ip_rate_limit_window_seconds: int = 900
+    auth_login_account_rate_limit_max_requests: int = 5
+    auth_login_account_rate_limit_window_seconds: int = 900
+    # Signup has no existing-account identity to key a second check on --
+    # its abuse profile is mass fake-account creation, which a per-IP limit
+    # alone already addresses. Longer window, tighter count: a legitimate
+    # user signs up once, ever, from a given IP.
+    auth_signup_rate_limit_max_requests: int = 5
+    auth_signup_rate_limit_window_seconds: int = 3600
+
     # --- CORS (frontend origins allowed to call this API) ---
     cors_origins: List[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 

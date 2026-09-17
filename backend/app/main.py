@@ -42,6 +42,16 @@ async def lifespan(app: FastAPI):
     app.state.image_url_extraction_rate_limiter = RateLimiter(
         settings.image_url_extraction_rate_limit_max_requests, settings.image_url_extraction_rate_limit_window_seconds
     )
+    # See api/auth.py's module docstring for the dual-key (IP + account) strategy these serve.
+    app.state.auth_login_ip_rate_limiter = RateLimiter(
+        settings.auth_login_ip_rate_limit_max_requests, settings.auth_login_ip_rate_limit_window_seconds
+    )
+    app.state.auth_login_account_rate_limiter = RateLimiter(
+        settings.auth_login_account_rate_limit_max_requests, settings.auth_login_account_rate_limit_window_seconds
+    )
+    app.state.auth_signup_rate_limiter = RateLimiter(
+        settings.auth_signup_rate_limit_max_requests, settings.auth_signup_rate_limit_window_seconds
+    )
     app.state.quota_service = QuotaService()
     logger.info("AI Try-On backend ready.")
     yield

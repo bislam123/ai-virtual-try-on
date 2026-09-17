@@ -53,7 +53,13 @@ class FakeProvider(VirtualTryOnProvider):
         return TryOnResult(image=Image.new("RGB", (64, 64), color="red"))
 
 
-def make_test_app(tmp_path, quota_service=None):
+def make_test_app(
+    tmp_path,
+    quota_service=None,
+    auth_login_ip_rate_limit=1000,
+    auth_login_account_rate_limit=1000,
+    auth_signup_rate_limit=1000,
+):
     app = FastAPI()
     configure_exception_handlers(app)
     app.include_router(tryon_module.router)
@@ -63,6 +69,16 @@ def make_test_app(tmp_path, quota_service=None):
     app.state.tryon_service = TryOnService(provider=FakeProvider(), storage=storage, job_store=DbJobStore())
     app.state.storage = storage  # used directly by auth_module's account-deletion endpoint
     app.state.rate_limiter = RateLimiter(max_requests=1000, window_seconds=3600)
+    # Permissive by default (matches the pattern in test_extraction_api.py's
+    # make_test_app(rate_limit=1000)): existing tests call signup()/login()
+    # a handful of times per test and must never accidentally trip these.
+    # Tests that specifically verify auth rate limiting pass a small value
+    # for the relevant parameter instead.
+    app.state.auth_login_ip_rate_limiter = RateLimiter(max_requests=auth_login_ip_rate_limit, window_seconds=900)
+    app.state.auth_login_account_rate_limiter = RateLimiter(
+        max_requests=auth_login_account_rate_limit, window_seconds=900
+    )
+    app.state.auth_signup_rate_limiter = RateLimiter(max_requests=auth_signup_rate_limit, window_seconds=3600)
     # Permissive by default: anonymous usage is tracked by client IP, which
     # every TestClient request in this file shares — a real QuotaService
     # here by default would make repeated test runs flaky as that shared
@@ -147,6 +163,141 @@ def test_login_unknown_email_same_message_as_wrong_password(client):
     resp = client.post("/api/auth/login", json={"email": "nobody-here@example.com", "password": "whatever"})
     assert resp.status_code == 401
     assert resp.json()["detail"] == "Incorrect email or password."
+
+
+# --- Login/signup rate limiting ---------------------------------------------
+
+
+def login(client, email, password):
+    return client.post("/api/auth/login", json={"email": email, "password": password})
+
+
+def test_login_allows_requests_up_to_the_limit(tmp_path, test_email):
+    """Legitimate use (a couple of mistyped-password retries) must not be
+    blocked -- confirms the limit is a ceiling, not a trip-wire on normal
+    traffic."""
+    client = TestClient(make_test_app(tmp_path, auth_login_ip_rate_limit=3, auth_login_account_rate_limit=3))
+    signup(client, test_email, password="right-password")
+
+    for _ in range(3):
+        resp = login(client, test_email, "wrong-password")
+        assert resp.status_code == 401  # allowed through to the real auth check, just fails on password
+
+
+def test_login_rate_limited_by_account_across_many_attempts_same_email(tmp_path, test_email):
+    """Brute-forcing one account's password, all from the same IP -- the
+    account-scoped limit must trip regardless of the (generous) IP limit."""
+    client = TestClient(make_test_app(tmp_path, auth_login_ip_rate_limit=1000, auth_login_account_rate_limit=2))
+    signup(client, test_email, password="right-password")
+
+    for _ in range(2):
+        assert login(client, test_email, "wrong-password").status_code == 401
+
+    limited = login(client, test_email, "wrong-password")
+    assert limited.status_code == 429
+    assert "Retry-After" in limited.headers
+
+
+def test_login_rate_limited_by_ip_across_different_target_emails(tmp_path):
+    """Credential-stuffing many different accounts from one source -- each
+    target email gets its own fresh account-level budget, so only the
+    per-IP limit can catch this pattern."""
+    client = TestClient(make_test_app(tmp_path, auth_login_ip_rate_limit=2, auth_login_account_rate_limit=1000))
+
+    for i in range(2):
+        resp = login(client, f"target-{i}@example.com", "whatever")
+        assert resp.status_code == 401  # allowed through, just an unknown email
+
+    limited = login(client, "yet-another-target@example.com", "whatever")
+    assert limited.status_code == 429
+    assert "Retry-After" in limited.headers
+
+
+def test_login_rate_limit_response_does_not_reveal_account_existence(tmp_path, test_email):
+    """The core enumeration-safety property: once account-rate-limited,
+    the response must be indistinguishable whether the targeted email is
+    a real, registered account or a made-up one -- same status, same
+    message shape, same header. Retry-After's exact numeric value is
+    intentionally compared with a small tolerance rather than exact
+    equality: it's derived from real elapsed time between the two calls
+    (see RateLimiter.check's retry_after computation), so exact equality
+    would be a real-time-dependent assertion and genuinely flaky under
+    load, not a meaningful enumeration signal -- see this test's own
+    history for a real instance of that flakiness, caught by running the
+    full suite, not just this file in isolation."""
+    client = TestClient(make_test_app(tmp_path, auth_login_ip_rate_limit=1000, auth_login_account_rate_limit=1))
+    signup(client, test_email, password="right-password")
+
+    login(client, test_email, "wrong-password")  # consumes the real account's budget
+    real_limited = login(client, test_email, "wrong-password")
+
+    fake_email = f"never-registered-{uuid.uuid4().hex}@example.com"
+    login(client, fake_email, "whatever")  # consumes the fake account's own, separate budget
+    fake_limited = login(client, fake_email, "whatever")
+
+    assert real_limited.status_code == fake_limited.status_code == 429
+
+    import re
+
+    real_detail = real_limited.json()["detail"]
+    fake_detail = fake_limited.json()["detail"]
+    # Same message with the retry-seconds number normalized out.
+    assert re.sub(r"\d+", "N", real_detail) == re.sub(r"\d+", "N", fake_detail)
+
+    real_retry_after = int(real_limited.headers["Retry-After"])
+    fake_retry_after = int(fake_limited.headers["Retry-After"])
+    assert abs(real_retry_after - fake_retry_after) <= 2  # tolerance for real elapsed time between the two calls
+
+
+def test_signup_allows_requests_up_to_the_limit(tmp_path):
+    client = TestClient(make_test_app(tmp_path, auth_signup_rate_limit=2))
+    emails = [f"signup-limit-test-{uuid.uuid4().hex}@example.com" for _ in range(2)]
+    try:
+        for email in emails:
+            assert signup(client, email).status_code == 201
+    finally:
+        with get_session() as session:
+            session.query(User).filter(User.email.in_(emails)).delete(synchronize_session=False)
+
+
+def test_signup_rate_limited_after_max_requests(tmp_path):
+    client = TestClient(make_test_app(tmp_path, auth_signup_rate_limit=2))
+    emails = [f"signup-limit-test-{uuid.uuid4().hex}@example.com" for _ in range(3)]
+    try:
+        for email in emails[:2]:
+            assert signup(client, email).status_code == 201
+
+        limited = signup(client, emails[2])
+        assert limited.status_code == 429
+        assert "Retry-After" in limited.headers
+    finally:
+        with get_session() as session:
+            session.query(User).filter(User.email.in_(emails)).delete(synchronize_session=False)
+
+
+def test_auth_rate_limiting_does_not_affect_unrelated_endpoints(tmp_path, test_email):
+    """Exhausting the login rate limit must not leak into try-on, /me, or
+    any other route sharing the same app/process -- each limiter instance
+    is keyed and scoped to its own endpoint only."""
+    client = TestClient(make_test_app(tmp_path, auth_login_ip_rate_limit=1, auth_login_account_rate_limit=1))
+    token = signup(client, test_email, password="right-password").json()["access_token"]
+
+    login(client, test_email, "wrong-password")
+    assert login(client, test_email, "wrong-password").status_code == 429  # login now rate-limited
+
+    # Unrelated routes, same client/IP, same process: unaffected.
+    assert client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"}).status_code == 200
+    assert _submit(client, headers={"Authorization": f"Bearer {token}"}).status_code == 202
+
+
+def test_existing_login_behavior_unchanged_with_generous_limits(client, test_email):
+    """Sanity check against the default (generous) test-app limits every
+    other test in this file already relies on -- proves the new rate
+    limiting is additive, not a behavior change, for ordinary traffic."""
+    signup(client, test_email, password="right-password")
+    ok = login(client, test_email, "right-password")
+    assert ok.status_code == 200
+    assert ok.json()["access_token"]
 
 
 # --- Account deletion -----------------------------------------------------
