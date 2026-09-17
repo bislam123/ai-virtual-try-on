@@ -62,7 +62,13 @@ app = FastAPI(title="AI Try-On API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
-    allow_methods=["GET", "POST"],
+    # Exactly the methods this API's routes actually use (confirmed by
+    # inspecting every @router.get/post/delete across backend/app/api/) --
+    # not "*": DELETE was missing here (added for account deletion,
+    # DELETE /api/auth/me), which would fail CORS preflight for that route
+    # whenever frontend and backend are on different origins. No PUT/PATCH
+    # exists anywhere in this API.
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
     # Without this, the browser's fetch() API silently strips these from
     # response.headers on a cross-origin request (frontend :5173, backend

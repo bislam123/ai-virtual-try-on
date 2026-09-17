@@ -42,7 +42,7 @@ All read by `backend/app/config.py` (`pydantic-settings`, prefix `AITRYON_`), wi
 | `AITRYON_AUTH_LOGIN_IP_RATE_LIMIT_MAX_REQUESTS` / `_WINDOW_SECONDS` | `10` / `900` | Per-IP limit on `POST /api/auth/login` |
 | `AITRYON_AUTH_LOGIN_ACCOUNT_RATE_LIMIT_MAX_REQUESTS` / `_WINDOW_SECONDS` | `5` / `900` | Per-account (submitted email) limit on `POST /api/auth/login`, in addition to the per-IP one above — see `backend/app/api/auth.py` for why login needs both |
 | `AITRYON_AUTH_SIGNUP_RATE_LIMIT_MAX_REQUESTS` / `_WINDOW_SECONDS` | `5` / `3600` | Per-IP limit on `POST /api/auth/signup` |
-| `AITRYON_CORS_ORIGINS` | `["http://localhost:5173", ...]` | Frontend origins allowed to call the API |
+| `AITRYON_CORS_ORIGINS` | `["http://localhost:5173", ...]` | Frontend origins allowed to call the API. **Must not be a wildcard (`"*"`) in production** — enforced at startup when `AITRYON_ENVIRONMENT=production` (`Settings.check_production_cors`). Allowed methods are fixed in code (`main.py`: `GET`, `POST`, `DELETE` — exactly what this API's routes use), not configurable via env var. |
 | `AITRYON_DATABASE_URL` | `postgresql+psycopg2://postgres:devpassword@localhost:5432/aitryon` | **Must be overridden outside local dev** — enforced at startup when `AITRYON_ENVIRONMENT=production`. |
 | `AITRYON_JWT_SECRET_KEY` | `dev-only-insecure-secret-change-me` | **Must be overridden outside local dev** — enforced at startup when `AITRYON_ENVIRONMENT=production`. Signs auth tokens — generate a real one with `python -c "import secrets; print(secrets.token_hex(32))"` |
 | `AITRYON_JWT_EXPIRE_MINUTES` | `10080` (7 days) | Access token lifetime |

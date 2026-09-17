@@ -178,6 +178,38 @@ class Settings(BaseSettings):
                 "development defaults are still in use:\n" + "\n".join(f"  - {p}" for p in problems)
             )
 
+    def check_production_cors(self) -> None:
+        """Refuses to start if AITRYON_ENVIRONMENT=production and
+        AITRYON_CORS_ORIGINS contains a literal wildcard ("*").
+
+        Concrete reason this is a security check, not just a style
+        preference: CORS controls whether a cross-origin page's JavaScript
+        can *read* the response, not just whether the request is sent. A
+        wildcard origin lets any website script requests against this
+        API's anonymous, unauthenticated endpoints (try-on submission,
+        product extraction) as if it were the real frontend -- e.g.
+        spending a visiting victim's anonymous rate-limit/quota budget
+        using the victim's own browser session. This app never sets
+        allow_credentials=True (Bearer-token auth, not cookies -- see
+        main.py), which limits but does not eliminate that exposure, so a
+        wildcard is still refused outright in production.
+
+        Deliberately narrow, like check_production_secrets(): this does
+        NOT flag cors_origins still being the localhost dev default in
+        production. That is a functional misconfiguration (the real
+        frontend simply can't reach the API, a "fails closed" annoyance,
+        not a vulnerability -- it's *more* restrictive than intended, not
+        less) and is out of scope for this check.
+        """
+        if self.environment != "production":
+            return
+        if "*" in self.cors_origins:
+            raise InsecureProductionConfigError(
+                'Refusing to start with AITRYON_ENVIRONMENT=production while AITRYON_CORS_ORIGINS '
+                'contains a wildcard ("*"). Set it to your production frontend\'s exact origin(s).'
+            )
+
 
 settings = Settings()
 settings.check_production_secrets()
+settings.check_production_cors()
