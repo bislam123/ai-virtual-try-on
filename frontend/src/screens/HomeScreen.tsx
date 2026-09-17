@@ -34,6 +34,7 @@ interface HomeScreenProps {
   onLogin: (email: string, password: string) => Promise<void>;
   onSignup: (email: string, password: string) => Promise<void>;
   onLogout: () => void;
+  onDeleteAccount: (password: string) => Promise<void>;
 }
 
 export default function HomeScreen({
@@ -51,6 +52,7 @@ export default function HomeScreen({
   onLogin,
   onSignup,
   onLogout,
+  onDeleteAccount,
 }: HomeScreenProps) {
   const canSubmit = personImage !== null && garmentImage !== null;
   const [extractionState, setExtractionState] = useState<ExtractionState>({ status: "idle" });
@@ -107,7 +109,13 @@ export default function HomeScreen({
 
   return (
     <div className="mx-auto flex min-h-screen max-w-md flex-col gap-6 px-4 pb-10 pt-8">
-      <AuthBar user={user} onLogin={onLogin} onSignup={onSignup} onLogout={onLogout} />
+      <AuthBar
+        user={user}
+        onLogin={onLogin}
+        onSignup={onSignup}
+        onLogout={onLogout}
+        onDeleteAccount={onDeleteAccount}
+      />
 
       <header className="text-center">
         <h1 className="text-3xl font-bold text-slate-900">✨ Try It On</h1>

@@ -45,6 +45,7 @@ export default function App() {
         onLogin={auth.login}
         onSignup={auth.signup}
         onLogout={auth.logout}
+        onDeleteAccount={auth.deleteAccount}
       />
     );
   }

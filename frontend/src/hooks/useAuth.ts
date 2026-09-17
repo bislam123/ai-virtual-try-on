@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { ApiError, getMe, login as apiLogin, signup as apiSignup } from "../api/authClient";
+import {
+  ApiError,
+  deleteAccount as apiDeleteAccount,
+  getMe,
+  login as apiLogin,
+  signup as apiSignup,
+} from "../api/authClient";
 import type { UserResponse } from "../types/auth";
 
 const TOKEN_STORAGE_KEY = "aitryon_auth_token";
@@ -76,7 +82,20 @@ export function useAuth() {
     setUser(null);
   }, []);
 
-  return { token, user, isLoadingUser, login, signup, logout };
+  // On success, clears session state via the exact same mechanism logout()
+  // uses — deletion on the backend is already irreversible by that point,
+  // so there's nothing left to keep signed into. On failure (e.g. wrong
+  // password), nothing is cleared and the error propagates to the caller.
+  const deleteAccount = useCallback(
+    async (password: string) => {
+      if (!token) throw new ApiError("Please sign in to use this feature.", 401);
+      await apiDeleteAccount(password, token);
+      logout();
+    },
+    [token, logout],
+  );
+
+  return { token, user, isLoadingUser, login, signup, logout, deleteAccount };
 }
 
 export { ApiError };
