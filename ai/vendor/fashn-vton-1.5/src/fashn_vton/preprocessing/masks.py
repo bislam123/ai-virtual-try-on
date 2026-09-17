@@ -23,17 +23,28 @@ def dilate_mask(mask: np.ndarray, kernel: tuple = (33, 33), iterations: int = 1)
 
 def create_bounded_mask(mask: np.ndarray) -> np.ndarray:
     """
-    Create a mask that fills the bounding box of the input mask.
+    Create a mask that fills the bounding box of each connected component
+    of the input mask, unioned together.
+
+    Per-component (not one global bounding box over the whole mask): a
+    single global box over a mask with disjoint regions (e.g. a hand
+    resting on a knee, separated in pixel space from the torso/arm blob
+    by a bent-pose gap) stretches to span the empty space between them,
+    covering true background. Bounding each component separately keeps
+    that empty space out while still filling holes within each region.
 
     Args:
         mask: Input binary mask
 
     Returns:
-        Bounded mask filling the bounding rectangle
+        Bounded mask, each connected component filled to its own bounding
+        rectangle
     """
     bounded_mask = np.zeros_like(mask)
-    x, y, w, h = cv2.boundingRect(mask.astype(np.uint8))
-    bounded_mask[y : y + h, x : x + w] = 1
+    num_labels, cc_labels = cv2.connectedComponents(mask.astype(np.uint8), connectivity=8)
+    for label in range(1, num_labels):
+        x, y, w, h = cv2.boundingRect((cc_labels == label).astype(np.uint8))
+        bounded_mask[y : y + h, x : x + w] = 1
     return bounded_mask
 
 

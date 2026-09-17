@@ -27,7 +27,12 @@ def _default(val, default_val):
 def _create_hybrid_contour_bounded_mask(
     contour_mask: np.ndarray,
     bounded_mask: np.ndarray,
-    min_distance_threshold: float = 100.0,
+    # AI Try-On project: matches create_clothing_agnostic_image's own fixed
+    # default below (never actually exercised in production -- that function
+    # always passes its own min_distance_threshold down explicitly -- but
+    # kept consistent rather than leaving a stale, too-generous value here
+    # for any future direct caller of this internal helper).
+    min_distance_threshold: float = 5.0,
     logger: Optional[logging.Logger] = None,
     baseline_height: float = 864.0,
 ) -> np.ndarray:
@@ -120,7 +125,23 @@ def create_clothing_agnostic_image(
     body_coverage: str,
     mask_value: int = 127,
     disable_masking: bool = False,
-    min_distance_threshold: float = 100.0,
+    # AI Try-On project: lowered from the upstream default of 100.0. At 100px
+    # (baseline-scaled), the hybrid trim barely shrinks the bounded mask for
+    # non-standing poses (bent knees, a hand resting on a leg, etc.) -- most
+    # of the bounding box survives because nearly every "extra" pixel is
+    # within 100px of *some* part of an elongated/non-convex body contour,
+    # producing a mask that covers large swaths of true background. Concave
+    # regions (e.g. the gap next to a bent leg) are Euclidean-close to the
+    # contour even though they're clearly not part of the body, so even a
+    # threshold as low as 10px still let a visible rectangular artifact
+    # through in testing. Verified against this project's own
+    # MediaPipeBodyParser segmentation output on a seated/bent-pose photo:
+    # 5.0 was the largest value with no visible artifact remaining (matches
+    # the pure contour-following mask), i.e. the hybrid mask's "extra
+    # bridging beyond contour" behavior only has safe room to do anything
+    # useful in a very small radius for this segmentation source. See
+    # docs/AI_MODEL_LICENSE.md for how this was diagnosed and validated.
+    min_distance_threshold: float = 5.0,
     baseline_height: float = 864.0,
     mask_limbs: bool = True,
     logger: Optional[logging.Logger] = None,
