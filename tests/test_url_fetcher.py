@@ -3,14 +3,23 @@
 Two layers, tested separately on purpose:
   - ssrf_guard: real DNS resolution, no network beyond that. Blocking
     private/loopback/link-local ranges is the actual security property —
-    these assertions are the ones that matter most in this file.
+    these assertions are the ones that matter most in this file. Also
+    covers resolve_pinned_connect_url() (the DNS-rebinding fix — see its
+    module docstring) with a mocked resolver, so the pinning logic itself
+    is tested deterministically without depending on real DNS.
   - HttpProductPageFetcher's fetch/parse orchestration: SSRF-blocked hosts
     (localhost etc.) can't double as "a fake external site" for testing the
-    parsing logic, so those tests monkeypatch assert_safe_url to a no-op
-    and use httpx.MockTransport to intercept the actual HTTP call — no
-    real network access, fully deterministic. The guard itself is never
-    weakened in the real code path, only in these specific test doubles.
+    parsing logic, so those tests monkeypatch both assert_safe_url and
+    resolve_pinned_connect_url to no-ops/passthroughs and use
+    httpx.MockTransport (injected via the constructor) to intercept the
+    actual HTTP call — no real network access, fully deterministic. The
+    guard itself is never weakened in the real code path, only in these
+    specific test doubles. test_request_connects_to_pinned_ip_* below is
+    the one exception: it deliberately does NOT bypass pinning, to prove
+    the real mechanism wires through _request end-to-end.
 """
+
+from urllib.parse import urlparse
 
 import httpx
 import pytest
@@ -19,7 +28,7 @@ from PIL import Image
 from product_extractor.fetchers import http_fetcher as http_fetcher_module
 from product_extractor.fetchers.base import ProductExtractionError
 from product_extractor.fetchers.http_fetcher import HttpProductPageFetcher
-from product_extractor.fetchers.ssrf_guard import assert_safe_url
+from product_extractor.fetchers.ssrf_guard import assert_safe_url, resolve_pinned_connect_url
 
 
 # --- ssrf_guard ---------------------------------------------------------
@@ -80,13 +89,71 @@ def test_ssrf_guard_unwraps_nat64_synthesized_addresses(monkeypatch):
         assert_safe_url("https://example-behind-nat64.test/product")
 
 
+def test_resolve_pinned_connect_url_substitutes_ip_and_returns_hostname(monkeypatch):
+    """The core DNS-rebinding fix: the returned connect_url must use the
+    exact IP that was just validated, not the original hostname (which a
+    second, later resolution could answer differently)."""
+    import socket as socket_module
+
+    from product_extractor.fetchers import ssrf_guard as ssrf_guard_module
+
+    def fake_getaddrinfo(host, *args, **kwargs):
+        return [(socket_module.AF_INET, socket_module.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+    monkeypatch.setattr(ssrf_guard_module.socket, "getaddrinfo", fake_getaddrinfo)
+
+    connect_url, hostname = resolve_pinned_connect_url("https://example.test:8443/path?q=1")
+    assert connect_url == "https://93.184.216.34:8443/path?q=1"
+    assert hostname == "example.test"
+
+
+def test_resolve_pinned_connect_url_brackets_ipv6_pinned_address(monkeypatch):
+    import socket as socket_module
+
+    from product_extractor.fetchers import ssrf_guard as ssrf_guard_module
+
+    def fake_getaddrinfo(host, *args, **kwargs):
+        return [(socket_module.AF_INET6, socket_module.SOCK_STREAM, 6, "", ("2606:4700::1", 0, 0, 0))]
+
+    monkeypatch.setattr(ssrf_guard_module.socket, "getaddrinfo", fake_getaddrinfo)
+
+    connect_url, hostname = resolve_pinned_connect_url("https://example.test/path")
+    assert connect_url == "https://[2606:4700::1]/path"
+    assert hostname == "example.test"
+
+
+def test_resolve_pinned_connect_url_still_rejects_unsafe_resolved_address(monkeypatch):
+    import socket as socket_module
+
+    from product_extractor.fetchers import ssrf_guard as ssrf_guard_module
+
+    def fake_getaddrinfo(host, *args, **kwargs):
+        return [(socket_module.AF_INET, socket_module.SOCK_STREAM, 6, "", ("10.0.0.5", 0))]
+
+    monkeypatch.setattr(ssrf_guard_module.socket, "getaddrinfo", fake_getaddrinfo)
+
+    with pytest.raises(ProductExtractionError):
+        resolve_pinned_connect_url("https://example.test/path")
+
+
 # --- HttpProductPageFetcher: parsing/orchestration ----------------------
 
 
-def _mock_fetcher(monkeypatch, routes: dict) -> HttpProductPageFetcher:
-    """routes: {url: httpx.Response}. Also disables the SSRF guard for this
-    fetcher instance only — see module docstring for why."""
+def _disable_ssrf_pinning(monkeypatch) -> None:
+    """Disables both the early fast-fail check and the pinning step
+    _request actually uses, so MockTransport route lookups below can match
+    on the original, human-readable URL rather than a real-DNS-resolved IP
+    — see module docstring for why the guard itself is never weakened in
+    the real code path, only in these test doubles."""
     monkeypatch.setattr(http_fetcher_module, "assert_safe_url", lambda url: None)
+    monkeypatch.setattr(
+        http_fetcher_module, "resolve_pinned_connect_url", lambda url: (url, urlparse(url).hostname)
+    )
+
+
+def _mock_fetcher(monkeypatch, routes: dict) -> HttpProductPageFetcher:
+    """routes: {url: httpx.Response}."""
+    _disable_ssrf_pinning(monkeypatch)
 
     def handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
@@ -95,14 +162,7 @@ def _mock_fetcher(monkeypatch, routes: dict) -> HttpProductPageFetcher:
         return httpx.Response(404)
 
     transport = httpx.MockTransport(handler)
-    real_stream = httpx.stream
-
-    def patched_stream(method, url, **kwargs):
-        client = httpx.Client(transport=transport)
-        return client.stream(method, url, **kwargs)
-
-    monkeypatch.setattr(http_fetcher_module.httpx, "stream", patched_stream)
-    return HttpProductPageFetcher()
+    return HttpProductPageFetcher(transport=transport)
 
 
 def _png_bytes(color="blue") -> bytes:
@@ -208,16 +268,10 @@ def test_fetch_image_from_url_downloads_direct_image(monkeypatch):
         requested_urls.append(str(request.url))
         return httpx.Response(200, content=_png_bytes(), headers={"content-type": "image/png"})
 
-    monkeypatch.setattr(http_fetcher_module, "assert_safe_url", lambda url: None)
+    _disable_ssrf_pinning(monkeypatch)
     transport = httpx.MockTransport(handler)
 
-    def patched_stream(method, url, **kwargs):
-        client = httpx.Client(transport=transport)
-        return client.stream(method, url, **kwargs)
-
-    monkeypatch.setattr(http_fetcher_module.httpx, "stream", patched_stream)
-
-    fetcher = HttpProductPageFetcher()
+    fetcher = HttpProductPageFetcher(transport=transport)
     image = fetcher.fetch_image_from_url("https://cdn.example.com/shirt.png")
     assert image.size == (300, 400)
     assert requested_urls == ["https://cdn.example.com/shirt.png"]
@@ -233,15 +287,45 @@ def test_fetch_image_from_url_invalid_content_raises_clear_error(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=b"not an image", headers={"content-type": "text/html"})
 
-    monkeypatch.setattr(http_fetcher_module, "assert_safe_url", lambda url: None)
+    _disable_ssrf_pinning(monkeypatch)
     transport = httpx.MockTransport(handler)
 
-    def patched_stream(method, url, **kwargs):
-        client = httpx.Client(transport=transport)
-        return client.stream(method, url, **kwargs)
-
-    monkeypatch.setattr(http_fetcher_module.httpx, "stream", patched_stream)
-
-    fetcher = HttpProductPageFetcher()
+    fetcher = HttpProductPageFetcher(transport=transport)
     with pytest.raises(ProductExtractionError, match="couldn't find a product image"):
         fetcher.fetch_image_from_url("https://cdn.example.com/not-an-image")
+
+
+def test_request_connects_to_pinned_ip_not_a_second_dns_lookup(monkeypatch):
+    """The DNS-rebinding fix, verified end-to-end through _request: the
+    actual HTTP connection must go to the IP resolve_pinned_connect_url
+    already validated -- not a second, independent resolution of the
+    hostname at connect time -- while still sending the original hostname
+    as the Host header and TLS SNI name so virtual-hosting/cert validation
+    keep working. Deliberately does NOT bypass pinning (unlike every other
+    test in this section) to prove the real mechanism, not a stand-in."""
+    import socket as socket_module
+
+    from product_extractor.fetchers import ssrf_guard as ssrf_guard_module
+
+    def fake_getaddrinfo(host, *args, **kwargs):
+        assert host == "pinned-example.test"
+        return [(socket_module.AF_INET, socket_module.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+    monkeypatch.setattr(ssrf_guard_module.socket, "getaddrinfo", fake_getaddrinfo)
+
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["host"] = request.url.host
+        captured["header_host"] = request.headers.get("host")
+        captured["sni"] = request.extensions.get("sni_hostname")
+        return httpx.Response(200, content=_png_bytes(), headers={"content-type": "image/png"})
+
+    transport = httpx.MockTransport(handler)
+    fetcher = HttpProductPageFetcher(transport=transport)
+
+    image = fetcher.fetch_image_from_url("https://pinned-example.test/shirt.png")
+    assert image.size == (300, 400)
+    assert captured["host"] == "93.184.216.34"
+    assert captured["header_host"] == "pinned-example.test"
+    assert captured["sni"] == "pinned-example.test"

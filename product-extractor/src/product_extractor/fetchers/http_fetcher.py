@@ -25,7 +25,7 @@ from bs4 import BeautifulSoup
 from PIL import Image
 
 from .base import ProductExtractionError, ProductPageFetcher
-from .ssrf_guard import assert_safe_url
+from .ssrf_guard import assert_safe_url, resolve_pinned_connect_url
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +49,17 @@ FETCH_FAILED_MESSAGE = "We couldn't reach that page. Please check the link or up
 
 
 class HttpProductPageFetcher(ProductPageFetcher):
+    def __init__(self, transport: Optional[httpx.BaseTransport] = None):
+        # A single, long-lived Client (this fetcher itself is a long-lived
+        # singleton, see backend/app/api/extraction.py) -- also required to
+        # use build_request()+send() below instead of the module-level
+        # httpx.stream() convenience function, since only the Client API
+        # accepts the `extensions={"sni_hostname": ...}` needed to connect
+        # to a pinned IP while still validating TLS against the real
+        # hostname (see ssrf_guard.py). transport= is a test seam only
+        # (httpx.MockTransport); production code never passes it.
+        self._client = httpx.Client(transport=transport) if transport is not None else httpx.Client()
+
     def fetch_product_image(self, url: str) -> Image.Image:
         assert_safe_url(url)
         self._check_robots_txt(url)
@@ -112,18 +123,30 @@ class HttpProductPageFetcher(ProductPageFetcher):
 
     def _request(self, url: str, max_bytes: int, allow_404: bool = False) -> Optional[bytes]:
         current_url = url
-        headers = {"User-Agent": USER_AGENT}
+        headers_base = {"User-Agent": USER_AGENT}
         for _ in range(_MAX_REDIRECTS + 1):
+            # Re-resolve, re-validate, and re-pin on every hop -- a redirect
+            # can point at an entirely different host, and pinning here
+            # (rather than trusting a check against current_url followed by
+            # a separate connect-time resolution) is what closes the
+            # DNS-rebinding gap; see ssrf_guard.py.
+            connect_url, hostname = resolve_pinned_connect_url(current_url)
+            headers = {**headers_base, "Host": hostname}
             try:
-                with httpx.stream(
-                    "GET", current_url, headers=headers, timeout=_REQUEST_TIMEOUT_SECONDS, follow_redirects=False
-                ) as response:
+                request = self._client.build_request(
+                    "GET",
+                    connect_url,
+                    headers=headers,
+                    extensions={"sni_hostname": hostname},
+                    timeout=_REQUEST_TIMEOUT_SECONDS,
+                )
+                response = self._client.send(request, stream=True, follow_redirects=False)
+                try:
                     if response.is_redirect:
                         next_url = response.headers.get("location")
                         if not next_url:
                             raise ProductExtractionError(FETCH_FAILED_MESSAGE)
                         current_url = urljoin(current_url, next_url)
-                        assert_safe_url(current_url)  # re-validate every hop — see ssrf_guard.py
                         continue
 
                     if response.status_code == 404 and allow_404:
@@ -137,6 +160,8 @@ class HttpProductPageFetcher(ProductPageFetcher):
                         if len(content) > max_bytes:
                             raise ProductExtractionError(FETCH_FAILED_MESSAGE)
                     return bytes(content)
+                finally:
+                    response.close()
             except httpx.HTTPError:
                 raise ProductExtractionError(FETCH_FAILED_MESSAGE)
         raise ProductExtractionError(FETCH_FAILED_MESSAGE)  # too many redirects
