@@ -120,10 +120,17 @@ async def create_try_on_job(
 
 
 @router.get("/{job_id}", response_model=TryOnJobStatusResponse)
-async def get_try_on_job(job_id: str, service: TryOnService = Depends(get_tryon_service)):
-    job = service.job_store.get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="We couldn't find that try-on job. It may have expired.")
+async def get_try_on_job(
+    job_id: str,
+    service: TryOnService = Depends(get_tryon_service),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
+    # Not Depends(get_current_user_required): an anonymous submitter must
+    # still be able to poll their own (anonymous) job with no token at
+    # all. Ownership for a job that *was* created while signed in is
+    # enforced inside get_job_for_viewer, not by requiring auth here --
+    # see that method's docstring.
+    job = service.get_job_for_viewer(job_id, user.id if user else None)
 
     result_url = f"/api/try-on/{job_id}/result" if job.status == JobStatus.COMPLETED else None
     return TryOnJobStatusResponse(
@@ -138,10 +145,12 @@ async def get_try_on_job(job_id: str, service: TryOnService = Depends(get_tryon_
 
 
 @router.get("/{job_id}/result")
-async def get_try_on_result(job_id: str, service: TryOnService = Depends(get_tryon_service)):
-    job = service.job_store.get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="We couldn't find that try-on job. It may have expired.")
+async def get_try_on_result(
+    job_id: str,
+    service: TryOnService = Depends(get_tryon_service),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
+    job = service.get_job_for_viewer(job_id, user.id if user else None)  # same ownership gate as job status, above
     if job.status != JobStatus.COMPLETED:
         raise HTTPException(status_code=409, detail=f"This job isn't ready yet (status: {job.status.value}).")
 

@@ -1,14 +1,11 @@
-/** Fetches the result as a blob rather than using the raw (cross-origin, in
- * dev) URL directly in an <a download>, which browsers can silently ignore
- * for cross-origin links — a same-origin blob: URL always downloads reliably. */
-async function fetchResultBlob(resultUrl: string): Promise<Blob> {
-  const response = await fetch(resultUrl);
-  if (!response.ok) throw new Error("Couldn't fetch the result image.");
-  return response.blob();
-}
+import { fetchResultImageBlob } from "../api/tryOnClient";
 
-export async function downloadResultImage(resultUrl: string, filename = "ai-tryon-result.png"): Promise<void> {
-  const blob = await fetchResultBlob(resultUrl);
+export async function downloadResultImage(
+  jobId: string,
+  token: string | null,
+  filename = "ai-tryon-result.png",
+): Promise<void> {
+  const blob = await fetchResultImageBlob(jobId, token);
   const objectUrl = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = objectUrl;
@@ -19,8 +16,8 @@ export async function downloadResultImage(resultUrl: string, filename = "ai-tryo
   URL.revokeObjectURL(objectUrl);
 }
 
-export async function shareResultImage(resultUrl: string): Promise<"shared" | "downloaded" | "cancelled"> {
-  const blob = await fetchResultBlob(resultUrl);
+export async function shareResultImage(jobId: string, token: string | null): Promise<"shared" | "downloaded" | "cancelled"> {
+  const blob = await fetchResultImageBlob(jobId, token);
   const file = new File([blob], "ai-tryon-result.png", { type: blob.type || "image/png" });
 
   if (navigator.canShare?.({ files: [file] })) {
@@ -36,6 +33,6 @@ export async function shareResultImage(resultUrl: string): Promise<"shared" | "d
 
   // Web Share API (with files) isn't available — e.g. most desktop browsers.
   // Falling back to a plain download still gets the user their image.
-  await downloadResultImage(resultUrl);
+  await downloadResultImage(jobId, token);
   return "downloaded";
 }

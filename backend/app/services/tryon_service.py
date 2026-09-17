@@ -104,6 +104,33 @@ class TryOnService:
         path = self.storage.get_result_path(job_id)
         return str(path) if path else None
 
+    def get_job_for_viewer(self, job_id: str, viewer_user_id: Optional[int]) -> Job:
+        """Authorization gate for GET /api/try-on/{job_id} and .../result:
+        a job_id is an unguessable uuid4 (122 bits), which was previously
+        the *only* protection on these endpoints -- anyone who learned the
+        id (browser history, a referrer header, a shared link, a server
+        log) could view that job's status and result image. Now:
+          - An anonymous job (user_id is None) remains viewable by anyone
+            holding the id, unchanged -- there is no account to restrict
+            access to, and the brief requires the core flow to keep
+            working without one (an anonymous submitter has no token to
+            prove "ownership" with beyond the id itself, which is exactly
+            today's accepted mechanism for anonymous jobs specifically).
+          - A job created while signed in is only viewable by that same
+            user. Same 404-then-403 shape as save_job above (not a new
+            convention): 404 if the job doesn't exist at all, 403 if it
+            exists but belongs to someone else -- including an
+            unauthenticated caller, treated the same as a mismatched
+            user_id. The 403 message never reveals whose job it is or any
+            of its content.
+        """
+        job = self.job_store.get(job_id)
+        if job is None:
+            raise UserFacingError("We couldn't find that try-on job. It may have expired.", status_code=404)
+        if job.user_id is not None and job.user_id != viewer_user_id:
+            raise UserFacingError("You can only view your own try-on jobs.", status_code=403)
+        return job
+
     def save_job(self, job_id: str, user_id: int) -> Job:
         """Marks a completed job as explicitly saved by its owner (brief
         section 16: results are temporary unless the user explicitly saves

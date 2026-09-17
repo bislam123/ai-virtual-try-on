@@ -326,7 +326,10 @@ def test_delete_account_removes_account_jobs_and_result_files(client, tmp_path, 
     headers = {"Authorization": f"Bearer {token}"}
 
     job_id = _submit(client, headers=headers).json()["job_id"]
-    assert client.get(f"/api/try-on/{job_id}").json()["status"] == "completed"  # fake provider is instant
+    # This job belongs to a signed-in user, so viewing its status requires
+    # that same owner's token (see the ownership tests below) -- unlike
+    # before this task, when any caller who knew the job_id could poll it.
+    assert client.get(f"/api/try-on/{job_id}", headers=headers).json()["status"] == "completed"  # fake provider is instant
 
     storage = LocalStorageService(str(tmp_path))
     assert storage.get_result_path(job_id) is not None  # result exists before deletion
@@ -356,7 +359,9 @@ def test_authenticated_job_can_be_saved_by_its_owner(client, test_email):
     headers = {"Authorization": f"Bearer {token}"}
 
     job_id = _submit(client, headers=headers).json()["job_id"]
-    status = client.get(f"/api/try-on/{job_id}").json()
+    # Owned job -- polling its status requires the owner's own token, same
+    # reasoning as test_delete_account_removes_account_jobs_and_result_files above.
+    status = client.get(f"/api/try-on/{job_id}", headers=headers).json()
     assert status["status"] == "completed"  # fake provider is instant
     assert status["saved"] is False
 
@@ -364,7 +369,7 @@ def test_authenticated_job_can_be_saved_by_its_owner(client, test_email):
     assert save_resp.status_code == 200, save_resp.text
     assert save_resp.json()["saved"] is True
 
-    assert client.get(f"/api/try-on/{job_id}").json()["saved"] is True
+    assert client.get(f"/api/try-on/{job_id}", headers=headers).json()["saved"] is True
 
 
 def test_save_requires_auth(client):
@@ -385,6 +390,121 @@ def test_save_nonexistent_job_returns_404(client, test_email):
     token = signup(client, test_email).json()["access_token"]
     resp = client.post("/api/try-on/does-not-exist/save", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 404
+
+
+# --- Job status/result endpoints: per-owner protection -----------------------
+#
+# Before this, GET /api/try-on/{job_id} and .../result relied solely on the
+# job_id being an unguessable uuid4 -- anyone who learned an id (browser
+# history, a referrer header, a shared link, a server log) could view that
+# job's status and result image, even for a job created by a signed-in user.
+# These target TryOnService.get_job_for_viewer, the ownership gate both
+# endpoints now share -- see its docstring for the anonymous-vs-owned design
+# split these tests exercise.
+
+
+@pytest.fixture
+def other_test_email():
+    """A second unique email per test, for ownership tests that need two
+    distinct signed-in users -- same shape as test_email above."""
+    email = f"test-{uuid.uuid4().hex}@example.com"
+    yield email
+    with get_session() as session:
+        user = session.query(User).filter(User.email == email).first()
+        if user is not None:
+            session.delete(user)
+
+
+def test_owner_can_view_their_own_job_status(client, test_email):
+    token = signup(client, test_email).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    job_id = _submit(client, headers=headers).json()["job_id"]
+
+    resp = client.get(f"/api/try-on/{job_id}", headers=headers)
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "completed"  # fake provider is instant
+
+
+def test_owner_can_view_their_own_result(client, test_email):
+    token = signup(client, test_email).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    job_id = _submit(client, headers=headers).json()["job_id"]
+
+    resp = client.get(f"/api/try-on/{job_id}/result", headers=headers)
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/png"
+
+
+def test_unauthenticated_caller_cannot_view_a_signed_in_users_job_status_or_result(client, test_email):
+    token = signup(client, test_email).json()["access_token"]
+    job_id = _submit(client, headers={"Authorization": f"Bearer {token}"}).json()["job_id"]
+
+    status_resp = client.get(f"/api/try-on/{job_id}")  # no Authorization header at all
+    assert status_resp.status_code == 403
+    assert "your own" in status_resp.json()["detail"]
+
+    result_resp = client.get(f"/api/try-on/{job_id}/result")
+    assert result_resp.status_code == 403
+
+
+def test_different_signed_in_user_cannot_view_someone_elses_job_status_or_result(
+    client, test_email, other_test_email
+):
+    owner_token = signup(client, test_email).json()["access_token"]
+    job_id = _submit(client, headers={"Authorization": f"Bearer {owner_token}"}).json()["job_id"]
+
+    other_token = signup(client, other_test_email).json()["access_token"]
+    other_headers = {"Authorization": f"Bearer {other_token}"}
+
+    status_resp = client.get(f"/api/try-on/{job_id}", headers=other_headers)
+    assert status_resp.status_code == 403
+    assert "your own" in status_resp.json()["detail"]
+
+    result_resp = client.get(f"/api/try-on/{job_id}/result", headers=other_headers)
+    assert result_resp.status_code == 403
+
+
+def test_unauthorized_response_never_reveals_whose_job_it_is(client, test_email, other_test_email):
+    """The 403 body must be generic enough that it can't be used to
+    fingerprint the real owner -- identical message regardless of who's
+    asking, and never containing the owner's email."""
+    owner_token = signup(client, test_email).json()["access_token"]
+    job_id = _submit(client, headers={"Authorization": f"Bearer {owner_token}"}).json()["job_id"]
+
+    other_token = signup(client, other_test_email).json()["access_token"]
+    from_other_user = client.get(f"/api/try-on/{job_id}", headers={"Authorization": f"Bearer {other_token}"})
+    from_anonymous = client.get(f"/api/try-on/{job_id}")
+
+    assert from_other_user.status_code == from_anonymous.status_code == 403
+    assert from_other_user.json()["detail"] == from_anonymous.json()["detail"]
+    assert test_email not in from_other_user.text
+    assert test_email not in from_anonymous.text
+
+
+def test_nonexistent_job_returns_404_not_403_even_when_authenticated(client, test_email):
+    """404-before-403 (see get_job_for_viewer): a made-up id must behave
+    identically to test_tryon_api.py's existing (anonymous)
+    test_unknown_job_returns_404, not start returning 403 just because the
+    caller happens to be signed in."""
+    token = signup(client, test_email).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    assert client.get("/api/try-on/does-not-exist", headers=headers).status_code == 404
+    assert client.get("/api/try-on/does-not-exist/result", headers=headers).status_code == 404
+
+
+def test_anonymous_job_remains_viewable_by_anyone_holding_the_id(client, test_email):
+    """No regression for the core no-account flow: a job created with no
+    token at all is unchanged by this task -- still viewable by its
+    anonymous creator, a different signed-in user, or nobody at all, since
+    there is no owner to restrict access to."""
+    anon_job_id = _submit(client).json()["job_id"]  # no Authorization header
+
+    assert client.get(f"/api/try-on/{anon_job_id}").status_code == 200  # anonymous viewer
+
+    token = signup(client, test_email).json()["access_token"]
+    signed_in_resp = client.get(f"/api/try-on/{anon_job_id}", headers={"Authorization": f"Bearer {token}"})
+    assert signed_in_resp.status_code == 200
 
 
 # --- Milestone 11: usage quotas, against the real QuotaService --------------

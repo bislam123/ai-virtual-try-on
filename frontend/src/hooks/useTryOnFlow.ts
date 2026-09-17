@@ -25,10 +25,10 @@ export function useTryOnFlow() {
   }, []);
 
   const poll = useCallback(
-    (jobId: string) => {
+    (jobId: string, token?: string | null) => {
       const tick = async () => {
         try {
-          const status = await getJobStatus(jobId);
+          const status = await getJobStatus(jobId, token);
           if (status.status === "completed") {
             setSubmission({ status: "completed", jobId, resultUrl: getResultImageUrl(jobId), saved: status.saved });
             return;
@@ -80,7 +80,7 @@ export function useTryOnFlow() {
           return;
         }
         setSubmission({ status: created.status, jobId: created.job_id });
-        poll(created.job_id);
+        poll(created.job_id, token);
       } catch (err) {
         setSubmission({
           status: "failed",

@@ -59,7 +59,7 @@ API route
 TryOnService / DB
 ```
 
-What an account actually unlocks today: a job submitted while signed in is attributed to that user, which is the only thing that makes `POST /api/try-on/{job_id}/save` meaningful — you can only save a job you created while authenticated (no retroactively claiming an anonymous job onto an account, and no saving someone else's job). Passwords are hashed with bcrypt directly (not passlib — recent passlib/bcrypt version pins are a known breakage source); tokens are signed JWTs (PyJWT), `backend/app/auth/security.py` is the only file that touches either.
+What an account actually unlocks today: a job submitted while signed in is attributed to that user, which is what makes `POST /api/try-on/{job_id}/save` meaningful (you can only save a job you created while authenticated — no retroactively claiming an anonymous job onto an account, and no saving someone else's job) and also what gates `GET /api/try-on/{job_id}`/`.../result` — a job attributed to a user is only *viewable* by that same user, not by job_id alone (`TryOnService.get_job_for_viewer`); an anonymous job has no owner to restrict, so it stays viewable by anyone holding its id, exactly as before accounts existed. Passwords are hashed with bcrypt directly (not passlib — recent passlib/bcrypt version pins are a known breakage source); tokens are signed JWTs (PyJWT), `backend/app/auth/security.py` is the only file that touches either.
 
 ## Product extraction (Milestone 7)
 

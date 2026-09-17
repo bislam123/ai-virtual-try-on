@@ -20,7 +20,6 @@ export default function App() {
       <ResultScreen
         personImage={flow.personImage}
         jobId={submission.jobId}
-        resultUrl={submission.resultUrl}
         saved={submission.saved}
         authToken={auth.token}
         onSaved={flow.markSaved}

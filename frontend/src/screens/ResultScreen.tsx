@@ -1,11 +1,10 @@
 import { useEffect, useState } from "react";
-import { ApiError, saveTryOnResult } from "../api/tryOnClient";
+import { ApiError, fetchResultImageBlob, saveTryOnResult } from "../api/tryOnClient";
 import { downloadResultImage, shareResultImage } from "../utils/resultActions";
 
 interface ResultScreenProps {
   personImage: File;
   jobId: string;
-  resultUrl: string;
   saved: boolean;
   authToken: string | null;
   onSaved: () => void;
@@ -16,7 +15,6 @@ interface ResultScreenProps {
 export default function ResultScreen({
   personImage,
   jobId,
-  resultUrl,
   saved,
   authToken,
   onSaved,
@@ -24,6 +22,8 @@ export default function ResultScreen({
   onChangeClothing,
 }: ResultScreenProps) {
   const [personPreviewUrl, setPersonPreviewUrl] = useState<string | null>(null);
+  const [resultPreviewUrl, setResultPreviewUrl] = useState<string | null>(null);
+  const [resultLoadError, setResultLoadError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
 
@@ -35,11 +35,41 @@ export default function ResultScreen({
     return () => URL.revokeObjectURL(url);
   }, [personImage]);
 
+  // The result image can no longer be a plain <img src="..."> -- the
+  // backend now enforces per-owner access on this job (see
+  // backend/app/services/tryon_service.py's get_job_for_viewer), and a
+  // browser never attaches an Authorization header to a plain <img> tag.
+  // Fetched here (carrying authToken when present) and turned into a
+  // same-origin object URL instead, same lifecycle pattern as the person
+  // preview above.
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    setResultPreviewUrl(null);
+    setResultLoadError(null);
+
+    fetchResultImageBlob(jobId, authToken)
+      .then((blob) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setResultPreviewUrl(objectUrl);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setResultLoadError(err instanceof ApiError ? err.message : "Couldn't load your result image.");
+      });
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [jobId, authToken]);
+
   const handleSave = async () => {
     setIsBusy(true);
     setActionMessage(null);
     try {
-      await downloadResultImage(resultUrl);
+      await downloadResultImage(jobId, authToken);
       setActionMessage("Saved to your device.");
     } catch {
       setActionMessage("Couldn't save the image. Please try again.");
@@ -52,7 +82,7 @@ export default function ResultScreen({
     setIsBusy(true);
     setActionMessage(null);
     try {
-      const outcome = await shareResultImage(resultUrl);
+      const outcome = await shareResultImage(jobId, authToken);
       if (outcome === "downloaded") setActionMessage("Sharing isn't available here — saved to your device instead.");
     } catch {
       setActionMessage("Couldn't share the image. Please try again.");
@@ -83,7 +113,13 @@ export default function ResultScreen({
       </header>
 
       <section className="rounded-2xl bg-white p-3 shadow-sm">
-        <img src={resultUrl} alt="Try-on result" className="w-full rounded-xl object-contain" />
+        {resultPreviewUrl ? (
+          <img src={resultPreviewUrl} alt="Try-on result" className="w-full rounded-xl object-contain" />
+        ) : resultLoadError ? (
+          <p className="p-4 text-center text-sm text-red-600">{resultLoadError}</p>
+        ) : (
+          <div className="flex h-64 items-center justify-center text-sm text-slate-400">Loading your result…</div>
+        )}
       </section>
 
       {personPreviewUrl && (
