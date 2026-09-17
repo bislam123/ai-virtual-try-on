@@ -90,6 +90,42 @@ class Settings(BaseSettings):
     max_upload_size_mb: int = 10
     max_image_dimension_px: int = 4096
 
+    # --- Request body size limit (see app/core/body_size_limit.py) ---
+    # A different layer from max_upload_size_mb/max_image_dimension_px
+    # above: those validate a single already-read image field's bytes/
+    # pixels, well after the raw HTTP body has already been fully
+    # received. This caps the *raw request body as a whole*, enforced
+    # before Starlette/python-multipart ever parses it and without
+    # buffering an oversized body first -- see that module's docstring for
+    # exactly how, and why a middleware-level check is required at all
+    # (the per-field checks alone can't prevent the server from spending
+    # time/memory/disk receiving an effectively unbounded body before they
+    # ever get a chance to run).
+    #
+    # Default (25 MiB) is sized for this app's actual worst-case
+    # legitimate request, not picked arbitrarily: POST /api/try-on is the
+    # largest real request this API accepts -- two image fields, each
+    # individually capped at max_upload_size_mb (10MB default) above, so
+    # 20MB of real image data -- plus a handful of small form fields
+    # (category, garment_photo_type, num_timesteps, seed) and multipart
+    # boundary/header overhead per part (a few hundred bytes each,
+    # negligible). 25 MiB leaves comfortable headroom above that 20MB
+    # legitimate ceiling (room for e.g. two ~9.5MB phone photos plus
+    # overhead) without being needlessly generous to an oversized request.
+    # If max_upload_size_mb is ever raised, reconsider this alongside it --
+    # the two are independent settings, not derived from one another.
+    #
+    # Production recommendation: if a reverse proxy sits in front of this
+    # app (nginx, Caddy, a cloud load balancer, ...), it should carry its
+    # own aligned body-size limit too (e.g. nginx's client_max_body_size)
+    # -- this application-level limit is defense in depth, not a
+    # substitute for one, since a proxy-level limit can reject an
+    # oversized request before it ever reaches this process at all. Keep
+    # the two aligned (proxy limit >= this one) so the proxy doesn't
+    # silently truncate a request this layer would otherwise have handled
+    # cleanly. See docs/ENVIRONMENT.md.
+    max_request_body_bytes: int = 25 * 1024 * 1024
+
     # --- Rate limiting (see app/services/rate_limiter.py) ---
     # Deliberately generous dev defaults. Production per-plan quotas (free/premium)
     # are a Milestone 11 concern; this is just abuse/cost protection for the raw API.

@@ -6,7 +6,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .api import auth, extraction, tryon, usage
 from .config import settings
+from .core.body_size_limit import RequestBodySizeLimitMiddleware
 from .core.errors import configure_exception_handlers
+from .core.security_headers import SecurityHeadersMiddleware
 from .db import get_session
 from .providers.selfhosted import SelfHostedVTONProvider
 from .services.db_job_store import DbJobStore
@@ -89,6 +91,22 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AI Try-On API", lifespan=lifespan)
 
+# Middleware registration order matters here: Starlette applies the
+# *last*-added middleware as the *outermost* layer. CORSMiddleware is
+# added last (below) specifically so it ends up outermost and gets a
+# chance to add Access-Control-* headers to every response the two
+# middlewares below produce -- including a 413 from
+# RequestBodySizeLimitMiddleware, which builds and sends its response
+# directly rather than raising something CORS could otherwise intercept
+# indirectly. Verified this is actually how Starlette's middleware stack
+# behaves (last add_middleware call = outermost layer), not assumed --
+# see backend/app/core/body_size_limit.py's own docstring for the
+# ordering requirement this satisfies, and
+# tests/test_security_headers.py / tests/test_body_size_limit.py for the
+# direct proof that CORS headers actually land on these middlewares'
+# responses, not just on the router's.
+app.add_middleware(RequestBodySizeLimitMiddleware, max_bytes=settings.max_request_body_bytes)
+app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
