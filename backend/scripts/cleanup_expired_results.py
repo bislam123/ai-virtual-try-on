@@ -19,6 +19,17 @@ repeated runs:
     specific job_id this query returned (see StorageService's own docstring
     on why job_id-derived paths are safe, never user input).
 
+The TTL cutoff comparison (JobRecord.updated_at < cutoff) is correct
+independent of the database server/session's configured timezone: as of
+Alembic revision 34aed8f22dbb, created_at/updated_at are proper
+`timestamptz` columns (unambiguous instants), not `timestamp without time
+zone` (which silently reinterpreted an aware UTC datetime using whatever
+session timezone happened to be configured -- see that migration's own
+docstring for the full investigation). See
+tests/test_timestamp_timezone_handling.py for regression coverage proving
+this cutoff is correct even under a session timezone different from the
+one that wrote the rows.
+
 PRODUCTION SCHEDULER INTEGRATION POINT (read before deploying):
 This repository has no deployment/scheduler infrastructure yet (no
 Dockerfile, no CI/CD, no process manager config, no cron/systemd/Task

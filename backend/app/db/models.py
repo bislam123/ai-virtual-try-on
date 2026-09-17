@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import ForeignKey, String
+from sqlalchemy import DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
@@ -34,8 +34,12 @@ class Plan(Base):
     # (already a per-request parameter, see providers/base.py) rather than
     # inventing a separate quality axis.
     max_num_timesteps: Mapped[Optional[int]] = mapped_column(nullable=True)
-    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
-    updated_at: Mapped[datetime] = mapped_column(default=_utcnow, onupdate=_utcnow)
+    # DateTime(timezone=True): stored as Postgres timestamptz -- an
+    # unambiguous instant, not a session-timezone-dependent wall-clock
+    # value. See the 2026-09-17 migration's docstring for why this matters
+    # and how existing data was preserved when this was added.
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
 
 class User(Base):
@@ -45,7 +49,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     plan: Mapped[str] = mapped_column(ForeignKey("plans.name"), nullable=False, default="free")
-    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     # cascade: deleting a user deletes their job records too — no orphaned
     # account-linked rows lingering after an account is removed.
@@ -90,7 +94,13 @@ class JobRecord(Base):
     # saved it. See backend/scripts/cleanup_expired_results.py.
     saved: Mapped[bool] = mapped_column(nullable=False, default=False)
 
-    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
-    updated_at: Mapped[datetime] = mapped_column(default=_utcnow, onupdate=_utcnow)
+    # DateTime(timezone=True) -- see Plan.created_at's comment above. This
+    # is the column cleanup_expired_results.py and QuotaService.get_status
+    # both compare against a Python datetime.now(timezone.utc)-derived
+    # cutoff; storing an unambiguous instant instead of a session-timezone-
+    # dependent wall-clock value is what makes those comparisons correct
+    # regardless of the database server's configured timezone.
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
     user: Mapped[Optional["User"]] = relationship(back_populates="jobs")
