@@ -11,6 +11,7 @@ from .core.errors import configure_exception_handlers
 from .core.security_headers import SecurityHeadersMiddleware
 from .db import get_session
 from .providers.selfhosted import SelfHostedVTONProvider
+from .services.capacity_service import CapacityService
 from .services.db_job_store import DbJobStore
 from .services.email_service import ConsoleEmailService
 from .services.job_recovery import recover_stale_processing_jobs
@@ -85,6 +86,7 @@ async def lifespan(app: FastAPI):
     # deployment needs to swap in instead.
     app.state.email_service = ConsoleEmailService()
     app.state.quota_service = QuotaService()
+    app.state.capacity_service = CapacityService()
     logger.info("AI Try-On backend ready.")
     yield
 

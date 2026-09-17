@@ -12,6 +12,7 @@ has no history) or test QuotaService directly against a synthetic,
 per-test-unique client_ip (see test_quota_service.py) instead.
 """
 
+from backend.app.services.capacity_service import CapacityStatus
 from backend.app.services.quota_service import QuotaStatus
 
 
@@ -28,4 +29,24 @@ class FakeQuotaService:
             used_today=5 if self.exceeded else 0,
             used_this_month=0,
             max_num_timesteps=self.max_num_timesteps,
+        )
+
+
+class FakeCapacityService:
+    """Permissive by default, same reasoning as FakeQuotaService above:
+    the real CapacityService counts *every* pending/processing job in the
+    shared local dev database, which every TestClient request in a given
+    test file/run can contribute to -- a real one here by default would
+    make unrelated tests flaky depending on what else happened to be
+    mid-flight. Tests that specifically verify capacity enforcement pass
+    at_capacity=True (or use the real CapacityService against a
+    controlled, per-test set of jobs) instead."""
+
+    def __init__(self, at_capacity: bool = False):
+        self.at_capacity = at_capacity
+
+    def get_status(self, max_active_jobs):
+        return CapacityStatus(
+            active_jobs=max_active_jobs if self.at_capacity else 0,
+            max_active_jobs=max_active_jobs,
         )

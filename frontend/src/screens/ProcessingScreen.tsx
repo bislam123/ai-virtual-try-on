@@ -5,6 +5,7 @@ const STAGE_CYCLE_MS = 6000;
 
 interface ProcessingScreenProps {
   status: "pending" | "processing";
+  onCancel: () => void;
 }
 
 function formatElapsed(seconds: number): string {
@@ -13,7 +14,7 @@ function formatElapsed(seconds: number): string {
   return m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
-export default function ProcessingScreen({ status }: ProcessingScreenProps) {
+export default function ProcessingScreen({ status, onCancel }: ProcessingScreenProps) {
   // Lazy useState initializer, not a bare Date.now() call during render: it
   // runs exactly once, at mount, which is what we want for a start time.
   const [startedAt] = useState(() => Date.now());
@@ -50,6 +51,13 @@ export default function ProcessingScreen({ status }: ProcessingScreenProps) {
       <p className="max-w-xs text-xs text-slate-400">
         This can take a few minutes. Feel free to keep this tab open — we'll show your result as soon as it's ready.
       </p>
+      <button
+        type="button"
+        onClick={onCancel}
+        className="flex min-h-11 items-center px-4 text-sm font-medium text-slate-500 active:scale-[0.98]"
+      >
+        Cancel
+      </button>
     </div>
   );
 }

@@ -27,7 +27,7 @@ from backend.app.services.job_store import InMemoryJobStore
 from backend.app.services.rate_limiter import RateLimiter
 from backend.app.services.storage import LocalStorageService
 from backend.app.services.tryon_service import TryOnService
-from tests.conftest import FakeQuotaService
+from tests.conftest import FakeCapacityService, FakeQuotaService
 
 
 class CapturingProvider(VirtualTryOnProvider):
@@ -66,6 +66,7 @@ def make_tryon_test_app(tmp_path, max_request_body_bytes, provider=None, quota_s
     )
     app.state.rate_limiter = RateLimiter(max_requests=1000, window_seconds=3600)
     app.state.quota_service = quota_service or SpyQuotaService()
+    app.state.capacity_service = FakeCapacityService()
     return app, job_store
 
 

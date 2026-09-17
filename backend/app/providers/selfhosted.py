@@ -43,22 +43,16 @@ from typing import Optional
 
 from fashn_vton import TryOnPipeline
 
-from .base import TryOnRequest, TryOnResult, VirtualTryOnProvider
+from .base import InferenceTimeoutError, ProviderBusyError, TryOnRequest, TryOnResult, VirtualTryOnProvider
 
 logger = logging.getLogger(__name__)
 
-
-class InferenceTimeoutError(Exception):
-    """Raised when a generate() call exceeds inference_timeout_seconds.
-    See this module's docstring: the underlying computation is NOT
-    forcibly stopped and may still be running/holding the lock."""
-
-
-class ProviderBusyError(Exception):
-    """Raised when the provider's internal lock couldn't be acquired
-    within lock_acquire_timeout_seconds -- either a legitimately long
-    generation is already in progress, or an earlier one hit
-    InferenceTimeoutError and hasn't actually finished yet."""
+# Re-exported for backward compatibility -- existing code (and
+# tests/test_selfhosted_provider.py) imports these two names from this
+# module; the actual definitions now live in providers/base.py so
+# services/tryon_service.py can reference them without importing anything
+# provider-specific (see base.py's docstring on both classes for why).
+__all__ = ["InferenceTimeoutError", "ProviderBusyError", "SelfHostedVTONProvider"]
 
 
 class SelfHostedVTONProvider(VirtualTryOnProvider):

@@ -38,7 +38,7 @@ export default function App() {
   if (resetToken) {
     screen = <ResetPasswordScreen token={resetToken} onDone={dismissResetPassword} />;
   } else if (submission.status === "pending" || submission.status === "processing") {
-    screen = <ProcessingScreen status={submission.status} />;
+    screen = <ProcessingScreen status={submission.status} onCancel={() => void flow.cancel(auth.token)} />;
   } else if (submission.status === "completed" && flow.personImage) {
     screen = (
       <ResultScreen

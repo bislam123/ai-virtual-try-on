@@ -23,7 +23,7 @@ from backend.app.services.job_store import InMemoryJobStore
 from backend.app.services.rate_limiter import RateLimiter
 from backend.app.services.storage import LocalStorageService
 from backend.app.services.tryon_service import TryOnService
-from tests.conftest import FakeQuotaService
+from tests.conftest import FakeCapacityService, FakeQuotaService
 
 
 class FakeProvider(VirtualTryOnProvider):
@@ -51,7 +51,7 @@ class CapturingProvider(VirtualTryOnProvider):
         return TryOnResult(image=Image.new("RGB", (64, 64), color="red"))
 
 
-def make_test_app(tmp_path, provider=None, rate_limit=1000, quota_service=None):
+def make_test_app(tmp_path, provider=None, rate_limit=1000, quota_service=None, capacity_service=None):
     app = FastAPI()
     configure_exception_handlers(app)
     app.include_router(tryon_module.router)
@@ -62,6 +62,7 @@ def make_test_app(tmp_path, provider=None, rate_limit=1000, quota_service=None):
     )
     app.state.rate_limiter = RateLimiter(max_requests=rate_limit, window_seconds=3600)
     app.state.quota_service = quota_service or FakeQuotaService()
+    app.state.capacity_service = capacity_service or FakeCapacityService()
     return app
 
 
@@ -358,6 +359,37 @@ def test_oversized_idempotency_key_header_is_rejected(tmp_path):
     client = TestClient(make_test_app(tmp_path))
     resp = _submit(client, headers={"Idempotency-Key": "x" * 256})
     assert resp.status_code == 400
+
+
+def test_cancel_already_completed_job_via_api_is_refused(tmp_path):
+    """API-level counterpart to test_tryon_service.py's direct-call
+    version -- through TestClient, a submitted job with the (instant)
+    FakeProvider has already completed by the time _submit() returns (see
+    this file's own module docstring), so this exercises cancel's
+    already-terminal refusal through the real HTTP route."""
+    client = TestClient(make_test_app(tmp_path))
+    job_id = _submit(client).json()["job_id"]
+    assert client.get(f"/api/try-on/{job_id}").json()["status"] == "completed"
+
+    resp = client.post(f"/api/try-on/{job_id}/cancel")
+
+    assert resp.status_code == 409
+    assert client.get(f"/api/try-on/{job_id}").json()["status"] == "completed"  # untouched
+
+
+def test_cancel_unknown_job_returns_404(tmp_path):
+    client = TestClient(make_test_app(tmp_path))
+    assert client.post("/api/try-on/does-not-exist/cancel").status_code == 404
+
+
+def test_cancel_response_never_leaks_internal_detail(tmp_path):
+    client = TestClient(make_test_app(tmp_path))
+    job_id = _submit(client).json()["job_id"]
+
+    resp = client.post(f"/api/try-on/{job_id}/cancel")
+
+    assert "Traceback" not in resp.text
+    assert ".py" not in resp.text
 
 
 def test_num_timesteps_clamped_by_plan_cap(tmp_path):

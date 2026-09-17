@@ -13,7 +13,14 @@ from typing import Optional, Tuple
 from PIL import Image
 
 from ..core.errors import UserFacingError
-from ..providers.base import GarmentCategory, GarmentPhotoType, TryOnRequest, VirtualTryOnProvider
+from ..providers.base import (
+    GarmentCategory,
+    GarmentPhotoType,
+    InferenceTimeoutError,
+    ProviderBusyError,
+    TryOnRequest,
+    VirtualTryOnProvider,
+)
 from .job_store import Job, JobStatus, JobStore
 from .storage import StorageService
 
@@ -193,13 +200,47 @@ class TryOnService:
         return job, True
 
     def run_job(self, job_id: str) -> None:
-        """The actual (slow) work. Runs in a background thread."""
+        """The actual (slow) work. Runs in a background thread.
+
+        Claims the job via an atomic PENDING -> PROCESSING transition
+        (try_transition_status), not an unconditional update: this is
+        what makes cancel_job's own PENDING -> CANCELLED transition
+        race-safe against this method starting to run at the same moment
+        -- exactly one of the two can ever win a given job, at the
+        database level, not by luck of scheduling order. For every job
+        created normally, nothing else touches its status before this
+        runs, so the claim always succeeds; it only ever fails here when
+        cancel_job won the race first, in which case there is nothing
+        left to do but clean up and return -- the job is meant to stay
+        CANCELLED, not be silently overwritten back to PROCESSING/FAILED.
+        """
         job = self.job_store.get(job_id)
         if job is None:
             logger.error("run_job called for unknown job_id=%s", job_id)
             return
 
-        self.job_store.update_status(job_id, JobStatus.PROCESSING)
+        claimed = self.job_store.try_transition_status(
+            job_id, expected=JobStatus.PENDING, new=JobStatus.PROCESSING
+        )
+        if not claimed:
+            current = self.job_store.get(job_id)
+            if current is not None and current.status != JobStatus.CANCELLED:
+                # Should not happen in normal operation -- nothing else
+                # ever writes a job's status before run_job does, so a
+                # non-cancelled claim failure means something unexpected
+                # raced this call. Logged, not raised: there is no caller
+                # here to propagate an error to (this runs as a fire-and-
+                # forget background task), and the job's own status
+                # already reflects whatever that other writer set.
+                logger.warning(
+                    "run_job could not claim job %s for processing (status is %s, not pending) -- "
+                    "leaving it as-is.",
+                    job_id,
+                    current.status.value,
+                )
+            self.storage.cleanup_temp(job_id)
+            return
+
         try:
             person_bytes = self.storage.load_temp_upload(job_id, PERSON_FILENAME)
             garment_bytes = self.storage.load_temp_upload(job_id, GARMENT_FILENAME)
@@ -218,6 +259,15 @@ class TryOnService:
             result = self.provider.generate(request)
             self.storage.save_result(job_id, result.image)
             self.job_store.update_status(job_id, JobStatus.COMPLETED)
+        except (ProviderBusyError, InferenceTimeoutError) as e:
+            # Both carry their own already-safe, already-clear message
+            # (see providers/base.py) -- an operational "couldn't run this
+            # right now" condition, not a bug, so it's surfaced directly
+            # instead of being flattened into the fully generic message
+            # below, and logged at warning level (no stack trace needed
+            # for an expected condition).
+            logger.warning("Try-on job %s could not run: %s", job_id, e)
+            self.job_store.update_status(job_id, JobStatus.FAILED, error=str(e))
         except Exception:
             logger.exception("Try-on job %s failed", job_id)
             self.job_store.update_status(job_id, JobStatus.FAILED, error=GENERIC_FAILURE_MESSAGE)
@@ -253,6 +303,56 @@ class TryOnService:
             raise UserFacingError("We couldn't find that try-on job. It may have expired.", status_code=404)
         if job.user_id is not None and job.user_id != viewer_user_id:
             raise UserFacingError("You can only view your own try-on jobs.", status_code=403)
+        return job
+
+    def cancel_job(self, job_id: str, viewer_user_id: Optional[int]) -> Job:
+        """Cancels a job that is still PENDING -- the narrow window
+        between job creation and run_job's background task claiming it
+        (see run_job's own docstring for the atomic transition both share).
+
+        Deliberately does NOT attempt to cancel a job that's already
+        PROCESSING: by that point run_job has already handed it to the
+        provider, which may genuinely be running the model, or may be
+        blocked waiting for the provider's single lock to free up (see
+        providers/selfhosted.py) -- either way, this architecture has no
+        safe way to stop it (no forceful thread termination, no separate
+        killable process), so cancellation is refused with a clear,
+        honest 409 rather than pretending to have stopped something it
+        didn't. The window this *can* cancel is real but typically short:
+        run_job normally starts running within milliseconds of job
+        creation, so this mostly matters when many jobs are queued (the
+        background-task thread pool itself is saturated) or when a
+        cancel request lands in a very tight race with submission.
+
+        Same ownership rule as get_job_for_viewer/save_job (404 if the job
+        doesn't exist, 403 if it belongs to someone else, an anonymous
+        job cancellable by anyone holding its id) -- reused, not
+        reinvented, so cancellation follows the exact same access model
+        as viewing already does.
+        """
+        job = self.job_store.get(job_id)
+        if job is None:
+            raise UserFacingError("We couldn't find that try-on job. It may have expired.", status_code=404)
+        if job.user_id is not None and job.user_id != viewer_user_id:
+            raise UserFacingError("You can only cancel your own try-on jobs.", status_code=403)
+
+        cancelled = self.job_store.try_transition_status(
+            job_id, expected=JobStatus.PENDING, new=JobStatus.CANCELLED
+        )
+        if not cancelled:
+            current = self.job_store.get(job_id) or job
+            raise UserFacingError(
+                f"This job can no longer be cancelled (status: {current.status.value}). "
+                "Generation may already be in progress.",
+                status_code=409,
+            )
+
+        # Safe even if run_job's own finally-block also calls this for the
+        # same job_id (e.g. a race where run_job's claim failed right
+        # after this committed) -- cleanup_temp is idempotent and safe
+        # against an already-missing path.
+        self.storage.cleanup_temp(job_id)
+        job.status = JobStatus.CANCELLED
         return job
 
     def save_job(self, job_id: str, user_id: int) -> Job:

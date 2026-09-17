@@ -10,6 +10,7 @@ from ..core.errors import UserFacingError
 from ..core.validation import validate_and_load_image
 from ..db import User
 from ..models.schemas import TryOnJobCreated, TryOnJobStatusResponse
+from ..services.capacity_service import CAPACITY_EXCEEDED_MESSAGE, CapacityService
 from ..services.job_store import JobStatus
 from ..services.quota_service import DEFAULT_PLAN_NAME, QuotaService, quota_exceeded_message
 from ..services.rate_limiter import RateLimiter
@@ -34,6 +35,23 @@ def get_quota_service(request: Request) -> QuotaService:
     return request.app.state.quota_service
 
 
+def get_capacity_service(request: Request) -> CapacityService:
+    return request.app.state.capacity_service
+
+
+def _check_capacity(capacity_service: CapacityService) -> None:
+    """Global admission control, checked right after the per-identity
+    quota check in both submission paths below -- see
+    services/capacity_service.py for why this is a separate concern from
+    quota/rate-limiting. Raises before any image validation/decoding or
+    job-row creation happens, so a capacity-rejected request never
+    consumes quota, never reserves an Idempotency-Key, and never creates
+    a job -- there is simply nothing left for it to have used."""
+    capacity_status = capacity_service.get_status(settings.max_active_tryon_jobs)
+    if capacity_status.is_at_capacity:
+        raise UserFacingError(CAPACITY_EXCEEDED_MESSAGE, status_code=429)
+
+
 MAX_IDEMPOTENCY_KEY_LENGTH = 255  # matches JobRecord.idempotency_key's column width
 
 
@@ -50,6 +68,7 @@ async def create_try_on_job(
     service: TryOnService = Depends(get_tryon_service),
     limiter: RateLimiter = Depends(get_rate_limiter),
     quota_service: QuotaService = Depends(get_quota_service),
+    capacity_service: CapacityService = Depends(get_capacity_service),
     user: Optional[User] = Depends(get_current_user_optional),
 ):
     # Signing in is entirely optional here (brief: don't force an account
@@ -124,6 +143,7 @@ async def create_try_on_job(
         )
         if quota_status.is_exceeded:
             raise UserFacingError(quota_exceeded_message(quota_status), status_code=429)
+        _check_capacity(capacity_service)
 
         plan_cap = quota_status.max_num_timesteps
         effective_max = settings.max_num_timesteps if plan_cap is None else min(settings.max_num_timesteps, plan_cap)
@@ -163,6 +183,7 @@ async def create_try_on_job(
     )
     if quota_status.is_exceeded:
         raise UserFacingError(quota_exceeded_message(quota_status), status_code=429)
+    _check_capacity(capacity_service)
 
     if category not in VALID_CATEGORIES:
         raise HTTPException(status_code=400, detail="category must be one of: tops, bottoms, one-pieces.")
@@ -270,5 +291,31 @@ async def save_try_on_result(
         created_at=job.created_at,
         updated_at=job.updated_at,
         result_url=f"/api/try-on/{job_id}/result",
+        saved=job.saved,
+    )
+
+
+@router.post("/{job_id}/cancel", response_model=TryOnJobStatusResponse)
+async def cancel_try_on_job(
+    job_id: str,
+    service: TryOnService = Depends(get_tryon_service),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
+    """Cancels a job while it's still PENDING -- see TryOnService.cancel_job
+    for the full reasoning, including why a job that's already PROCESSING
+    can't be (and isn't pretended to be) cancelled. Not Depends(...
+    _required): an anonymous submitter must be able to cancel their own
+    (anonymous) job with no token at all, same reasoning as the status/
+    result endpoints above -- ownership is enforced inside cancel_job
+    itself, not by requiring auth here.
+    """
+    job = service.cancel_job(job_id, user.id if user else None)
+    return TryOnJobStatusResponse(
+        job_id=job.id,
+        status=job.status,
+        error=job.error,
+        created_at=job.created_at,
+        updated_at=job.updated_at,
+        result_url=None,
         saved=job.saved,
     )

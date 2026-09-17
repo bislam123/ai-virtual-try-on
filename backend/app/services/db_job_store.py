@@ -4,6 +4,7 @@ import uuid
 from typing import Optional, Tuple
 
 from sqlalchemy import select
+from sqlalchemy import update as sa_update
 from sqlalchemy.exc import IntegrityError
 
 from ..db import JobRecord, get_session
@@ -73,6 +74,26 @@ class DbJobStore(JobStore):
                 return
             record.status = status.value
             record.error = error
+
+    def try_transition_status(
+        self, job_id: str, *, expected: JobStatus, new: JobStatus, error: Optional[str] = None
+    ) -> bool:
+        # A single UPDATE ... WHERE id = :id AND status = :expected: the
+        # database's own row-level locking is what makes this race-safe
+        # under real concurrency (two callers racing the same job_id),
+        # not an application-level check-then-act -- same idiom as
+        # password_reset_service.py's consume_reset_token. Under Postgres
+        # READ COMMITTED, a second concurrent UPDATE for the same row
+        # blocks behind the first's row lock, then re-evaluates the WHERE
+        # clause against the now-committed row once the first commits --
+        # so at most one of two racing callers ever sees rowcount == 1.
+        with get_session() as session:
+            result = session.execute(
+                sa_update(JobRecord)
+                .where(JobRecord.id == job_id, JobRecord.status == expected.value)
+                .values(status=new.value, error=error)
+            )
+            return result.rowcount == 1
 
     def mark_saved(self, job_id: str) -> None:
         with get_session() as session:

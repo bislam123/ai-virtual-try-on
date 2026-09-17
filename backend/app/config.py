@@ -132,6 +132,22 @@ class Settings(BaseSettings):
     rate_limit_max_requests: int = 20
     rate_limit_window_seconds: int = 3600
 
+    # --- Try-on job capacity (see app/services/capacity_service.py) ---
+    # A GLOBAL cap on how many try-on jobs may be pending/processing at
+    # once, across every user and IP combined -- a different question from
+    # rate_limit_max_requests above (per-identity abuse protection) or the
+    # per-plan quota (services/quota_service.py, also per-identity): many
+    # different identities, each safely within their own budget, could
+    # otherwise still pile up an unbounded number of expensive jobs, since
+    # SelfHostedVTONProvider only ever runs one generation at a time
+    # regardless of how many jobs exist. Deliberately modest: this is a
+    # single-process CPU/GPU model, not a worker fleet, so a large number
+    # of jobs sitting in this queue mostly just means a large number of
+    # background threads each blocked for a long time (up to
+    # provider_lock_acquire_timeout_seconds) waiting for a lock only one
+    # of them can hold — not real throughput.
+    max_active_tryon_jobs: int = 10
+
     # Product image extraction (Milestone 7) is classical CV, not a GPU/CPU-
     # heavy diffusion job — milliseconds, not minutes — so it gets its own,
     # far more generous limit rather than sharing the try-on one.

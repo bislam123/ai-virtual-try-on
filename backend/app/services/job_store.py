@@ -29,6 +29,17 @@ class JobStatus(str, Enum):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
+    # A job cancelled by its owner (see TryOnService.cancel_job) while it
+    # was still PENDING -- i.e. before run_job's background task claimed
+    # it for processing. Deliberately the *only* state a job can be
+    # cancelled from: once a job is PROCESSING, run_job has already handed
+    # it to the provider, and this architecture cannot safely stop an
+    # in-flight generation (see providers/selfhosted.py's module
+    # docstring) -- so cancellation of an already-processing job is
+    # refused outright, not faked. Fits the existing
+    # JobRecord.status String(16) column ("cancelled" is 9 chars) with no
+    # migration needed.
+    CANCELLED = "cancelled"
 
 
 @dataclass
@@ -75,6 +86,26 @@ class JobStore(ABC):
 
     @abstractmethod
     def update_status(self, job_id: str, status: JobStatus, error: Optional[str] = None) -> None: ...
+
+    @abstractmethod
+    def try_transition_status(
+        self, job_id: str, *, expected: JobStatus, new: JobStatus, error: Optional[str] = None
+    ) -> bool:
+        """Atomically transitions job_id from `expected` to `new`, but
+        ONLY if its status is *currently* `expected` -- returns True if
+        the transition happened, False if the job's status was already
+        something else (a race with another writer). Unlike
+        update_status above (an unconditional overwrite, used for a
+        job's own owning worker reporting its own outcome), this is the
+        primitive for two different writers who might race each other:
+        run_job claiming a job for processing, and cancel_job cancelling
+        one -- at most one of them can ever win for a given job, which is
+        exactly what "a job is never both cancelled and processed" needs.
+        Same atomic-UPDATE-with-a-WHERE-clause idiom already used
+        elsewhere in this codebase (see
+        services/password_reset_service.py's consume_reset_token), just
+        against jobs.status instead of a reset token's used_at."""
+        ...
 
     @abstractmethod
     def mark_saved(self, job_id: str) -> None: ...
@@ -168,6 +199,18 @@ class InMemoryJobStore(JobStore):
             job.status = status
             job.error = error
             job.updated_at = datetime.now(timezone.utc)
+
+    def try_transition_status(
+        self, job_id: str, *, expected: JobStatus, new: JobStatus, error: Optional[str] = None
+    ) -> bool:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job.status != expected:
+                return False
+            job.status = new
+            job.error = error
+            job.updated_at = datetime.now(timezone.utc)
+            return True
 
     def mark_saved(self, job_id: str) -> None:
         with self._lock:

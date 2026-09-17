@@ -31,7 +31,7 @@ from backend.app.services.quota_service import QuotaService
 from backend.app.services.rate_limiter import RateLimiter
 from backend.app.services.storage import LocalStorageService
 from backend.app.services.tryon_service import TryOnService
-from tests.conftest import FakeQuotaService
+from tests.conftest import FakeCapacityService, FakeQuotaService
 
 
 def _db_reachable() -> bool:
@@ -57,6 +57,7 @@ class FakeProvider(VirtualTryOnProvider):
 def make_test_app(
     tmp_path,
     quota_service=None,
+    capacity_service=None,
     auth_login_ip_rate_limit=1000,
     auth_login_account_rate_limit=1000,
     auth_signup_rate_limit=1000,
@@ -87,6 +88,11 @@ def make_test_app(
     # docstring). Tests that specifically verify quota enforcement pass
     # quota_service=QuotaService() explicitly and use a fresh per-test user.
     app.state.quota_service = quota_service or FakeQuotaService()
+    # Same reasoning as quota_service above, but even more so: capacity is
+    # a *global* count (every user/IP combined), so a real CapacityService
+    # here would be affected by literally any other job in the shared
+    # local dev database, not just this identity's own history.
+    app.state.capacity_service = capacity_service or FakeCapacityService()
     return app
 
 
@@ -537,6 +543,62 @@ def test_anonymous_job_remains_viewable_by_anyone_holding_the_id(client, test_em
     token = signup(client, test_email).json()["access_token"]
     signed_in_resp = client.get(f"/api/try-on/{anon_job_id}", headers={"Authorization": f"Bearer {token}"})
     assert signed_in_resp.status_code == 200
+
+
+# --- Cancellation: ownership (mirrors the view/result ownership tests above) -
+#
+# Every job here has already completed by the time _submit() returns (see
+# test_tryon_api.py's own module docstring on TestClient's synchronous
+# BackgroundTask execution) -- which is fine for these specific tests:
+# cancel_job checks ownership *before* checking whether the job is still
+# cancellable, so a 403/404 here is a genuine, status-independent proof of
+# the ownership gate, the same way test_tryon_api.py's own
+# test_cancel_already_completed_job_via_api_is_refused proves the 409 path
+# for an owner cancelling their own (already-done) job.
+
+
+def test_owner_can_attempt_to_cancel_their_own_job(client, test_email):
+    """"Succeeds" here means "gets past the ownership check to the real
+    409-already-completed refusal", not that cancellation itself worked --
+    proves the owner path specifically, distinct from the anonymous/other-
+    user paths below which are rejected earlier, at the ownership gate."""
+    token = signup(client, test_email).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    job_id = _submit(client, headers=headers).json()["job_id"]
+
+    resp = client.post(f"/api/try-on/{job_id}/cancel", headers=headers)
+
+    assert resp.status_code == 409  # already completed -- but NOT 403, proving ownership passed
+
+
+def test_different_signed_in_user_cannot_cancel_someone_elses_job(client, test_email, other_test_email):
+    owner_token = signup(client, test_email).json()["access_token"]
+    job_id = _submit(client, headers={"Authorization": f"Bearer {owner_token}"}).json()["job_id"]
+
+    other_token = signup(client, other_test_email).json()["access_token"]
+    resp = client.post(f"/api/try-on/{job_id}/cancel", headers={"Authorization": f"Bearer {other_token}"})
+
+    assert resp.status_code == 403
+    assert "your own" in resp.json()["detail"]
+
+
+def test_unauthenticated_caller_cannot_cancel_a_signed_in_users_job(client, test_email):
+    token = signup(client, test_email).json()["access_token"]
+    job_id = _submit(client, headers={"Authorization": f"Bearer {token}"}).json()["job_id"]
+
+    resp = client.post(f"/api/try-on/{job_id}/cancel")  # no Authorization header
+
+    assert resp.status_code == 403
+
+
+def test_anonymous_job_can_be_cancel_attempted_by_anyone_holding_the_id(client, test_email):
+    """Same anonymous-open-access policy as viewing -- no owner to
+    restrict cancellation to."""
+    anon_job_id = _submit(client).json()["job_id"]
+
+    resp = client.post(f"/api/try-on/{anon_job_id}/cancel")
+
+    assert resp.status_code == 409  # reaches the real (already-completed) refusal, not 403
 
 
 # --- Idempotency protection for POST /api/try-on ----------------------------

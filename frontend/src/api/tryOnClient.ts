@@ -40,6 +40,17 @@ export async function saveTryOnResult(jobId: string, token: string): Promise<Try
   return (await response.json()) as TryOnJobStatusResponse;
 }
 
+/** Only succeeds while the job is still "pending" -- the backend refuses
+ * (409) once generation has actually started, since this architecture
+ * can't safely stop an in-flight inference (see
+ * backend/app/services/tryon_service.py's cancel_job). Anonymous jobs
+ * cancellable by anyone holding the id, same as getJobStatus above --
+ * `token` is optional for the same reason. */
+export async function cancelTryOnJob(jobId: string, token?: string | null): Promise<TryOnJobStatusResponse> {
+  const response = await apiFetch(`/api/try-on/${jobId}/cancel`, { method: "POST" }, token);
+  return (await response.json()) as TryOnJobStatusResponse;
+}
+
 export function getResultImageUrl(jobId: string): string {
   return `${API_BASE_URL}/api/try-on/${jobId}/result`;
 }

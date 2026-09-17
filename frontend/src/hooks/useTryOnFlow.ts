@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { ApiError, getJobStatus, getResultImageUrl, submitTryOnJob } from "../api/tryOnClient";
+import { ApiError, cancelTryOnJob, getJobStatus, getResultImageUrl, submitTryOnJob } from "../api/tryOnClient";
 import type { GarmentCategory } from "../types/tryOn";
 
 interface IdempotencyKeyCache {
@@ -10,6 +10,21 @@ interface IdempotencyKeyCache {
 }
 
 const POLL_INTERVAL_MS = 4000;
+
+// Bounds how long this tab will keep actively polling one job, so an
+// abandoned/forgotten tab doesn't poll forever. Generous, not arbitrary:
+// docs/DEVELOPMENT.md documents this CPU-only dev machine's *legitimate*
+// worst-case generation time as 10-70+ minutes, and the backend's own
+// timeouts (AITRYON_INFERENCE_TIMEOUT_SECONDS / AITRYON_PROVIDER_LOCK_ACQUIRE_TIMEOUT_SECONDS,
+// each up to an hour by default) mean a legitimately queued job can take
+// even longer in the worst case. Hitting this bound stops *this tab's*
+// polling loop -- it never claims the job itself failed (see
+// POLL_TIMEOUT_MESSAGE below), since it may well still complete.
+const MAX_POLL_DURATION_MS = 90 * 60 * 1000; // 90 minutes
+
+const POLL_TIMEOUT_MESSAGE =
+  "This is taking longer than expected. Your try-on may still complete — please check back later.";
+const CANCELLED_MESSAGE = "This request was cancelled.";
 
 type Submission =
   | { status: "idle" }
@@ -53,6 +68,10 @@ export function useTryOnFlow() {
 
   const poll = useCallback(
     (jobId: string, token?: string | null) => {
+      // Tracked once per poll() call (not reset each tick), so the bound
+      // covers the whole polling session's real elapsed time.
+      const pollStartedAt = Date.now();
+
       const tick = async () => {
         try {
           const status = await getJobStatus(jobId, token);
@@ -65,6 +84,15 @@ export function useTryOnFlow() {
               status: "failed",
               message: status.error ?? "We couldn't generate your try-on result. Please try again.",
             });
+            return;
+          }
+          if (status.status === "cancelled") {
+            setSubmission({ status: "failed", message: CANCELLED_MESSAGE });
+            return;
+          }
+          // Only "pending" | "processing" can reach here.
+          if (Date.now() - pollStartedAt > MAX_POLL_DURATION_MS) {
+            setSubmission({ status: "failed", message: POLL_TIMEOUT_MESSAGE });
             return;
           }
           setSubmission({ status: status.status, jobId });
@@ -107,6 +135,13 @@ export function useTryOnFlow() {
           });
           return;
         }
+        if (created.status === "cancelled") {
+          // Cannot actually happen -- a job is never created already
+          // cancelled -- but narrowed explicitly rather than assumed away,
+          // same reasoning as the comment above.
+          setSubmission({ status: "failed", message: CANCELLED_MESSAGE });
+          return;
+        }
         setSubmission({ status: created.status, jobId: created.job_id });
         poll(created.job_id, token);
       } catch (err) {
@@ -122,6 +157,29 @@ export function useTryOnFlow() {
   const dismissError = useCallback(() => {
     setSubmission({ status: "idle" });
   }, []);
+
+  // Only ever meaningfully cancels a job that's still "pending" -- the
+  // backend refuses (409) once generation has actually started, since
+  // this architecture can't safely stop an in-flight inference (see
+  // backend/app/services/tryon_service.py's cancel_job). On that refusal,
+  // resumes polling rather than leaving the screen stuck showing neither
+  // progress nor an error -- the job is still genuinely in flight either
+  // way, whether or not this specific cancel attempt landed in time.
+  const cancel = useCallback(
+    async (token?: string | null) => {
+      if (submission.status !== "pending" && submission.status !== "processing") return;
+      const jobId = submission.jobId;
+      stopPolling();
+      try {
+        await cancelTryOnJob(jobId, token);
+        setSubmission({ status: "failed", message: CANCELLED_MESSAGE });
+      } catch {
+        setSubmission({ status: submission.status, jobId });
+        poll(jobId, token);
+      }
+    },
+    [submission, stopPolling, poll],
+  );
 
   const markSaved = useCallback(() => {
     setSubmission((prev) => (prev.status === "completed" ? { ...prev, saved: true } : prev));
@@ -150,6 +208,7 @@ export function useTryOnFlow() {
     setCategory,
     submission,
     submit,
+    cancel,
     dismissError,
     markSaved,
     tryAnother,
