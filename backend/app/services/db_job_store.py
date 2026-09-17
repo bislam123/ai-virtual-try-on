@@ -1,7 +1,10 @@
 """DbJobStore: the JobStore interface (see job_store.py) backed by Postgres."""
 
 import uuid
-from typing import Optional
+from typing import Optional, Tuple
+
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from ..db import JobRecord, get_session
 from ..providers.base import GarmentCategory, GarmentPhotoType
@@ -21,6 +24,9 @@ def _to_job(record: JobRecord) -> Job:
         status=JobStatus(record.status),
         error=record.error,
         saved=record.saved,
+        idempotency_scope=record.idempotency_scope,
+        idempotency_key=record.idempotency_key,
+        idempotency_fingerprint=record.idempotency_fingerprint,
         created_at=record.created_at,
         updated_at=record.updated_at,
     )
@@ -73,3 +79,61 @@ class DbJobStore(JobStore):
             record = session.get(JobRecord, job_id)
             if record is not None:
                 record.saved = True
+
+    def get_by_idempotency_key(self, idempotency_scope: str, idempotency_key: str) -> Optional[Job]:
+        with get_session() as session:
+            record = session.scalar(
+                select(JobRecord).where(
+                    JobRecord.idempotency_scope == idempotency_scope,
+                    JobRecord.idempotency_key == idempotency_key,
+                    JobRecord.status != JobStatus.FAILED.value,
+                )
+            )
+            return _to_job(record) if record is not None else None
+
+    def create_idempotent(
+        self,
+        *,
+        idempotency_scope: str,
+        idempotency_key: str,
+        idempotency_fingerprint: str,
+        user_id: Optional[int],
+        category: GarmentCategory,
+        num_timesteps: int,
+        guidance_scale: float,
+        seed: int,
+        client_ip: Optional[str] = None,
+        garment_photo_type: GarmentPhotoType = "flat-lay",
+    ) -> Tuple[Job, bool]:
+        record = JobRecord(
+            id=uuid.uuid4().hex,
+            user_id=user_id,
+            category=category,
+            num_timesteps=num_timesteps,
+            guidance_scale=guidance_scale,
+            seed=seed,
+            client_ip=client_ip,
+            garment_photo_type=garment_photo_type,
+            status=JobStatus.PENDING.value,
+            idempotency_scope=idempotency_scope,
+            idempotency_key=idempotency_key,
+            idempotency_fingerprint=idempotency_fingerprint,
+        )
+        try:
+            with get_session() as session:
+                session.add(record)
+                session.flush()
+                session.refresh(record)
+                return _to_job(record), True
+        except IntegrityError:
+            # Lost the race: another request for the same (scope, key)
+            # committed first -- jobs.ix_jobs_idempotency_active (a partial
+            # unique index, see the migration) is what makes this a real
+            # guarantee under concurrency, not just "unlikely to collide in
+            # practice". The winner is already committed and visible by the
+            # time Postgres reports our conflict, so this lookup can't
+            # legitimately come back empty.
+            existing = self.get_by_idempotency_key(idempotency_scope, idempotency_key)
+            if existing is None:
+                raise
+            return existing, False

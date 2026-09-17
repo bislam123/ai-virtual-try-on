@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import DateTime, ForeignKey, String
+from sqlalchemy import DateTime, ForeignKey, Index, String, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
@@ -94,6 +94,23 @@ class JobRecord(Base):
     # saved it. See backend/scripts/cleanup_expired_results.py.
     saved: Mapped[bool] = mapped_column(nullable=False, default=False)
 
+    # Idempotency protection for POST /api/try-on (double taps, network
+    # retries, mobile connection instability): all three are only ever set
+    # together, when the client sends an Idempotency-Key header -- see
+    # services/tryon_service.py's start_job_idempotent/find_idempotent_job
+    # and the migration that added these columns for the full design.
+    # idempotency_scope is "user:<id>" or "ip:<ip>" (the same identity
+    # string already used for rate limiting/quota, see api/tryon.py's
+    # client_key), never a global namespace shared across users.
+    idempotency_scope: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # Client-supplied, opaque -- capped at 255 chars at the API layer to
+    # fit this column.
+    idempotency_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # SHA-256 hex digest of the material request fields (see
+    # _idempotency_fingerprint) -- what makes "same key, different
+    # request" detectable rather than silently reused.
+    idempotency_fingerprint: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
     # DateTime(timezone=True) -- see Plan.created_at's comment above. This
     # is the column cleanup_expired_results.py and QuotaService.get_status
     # both compare against a Python datetime.now(timezone.utc)-derived
@@ -104,3 +121,22 @@ class JobRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
     user: Mapped[Optional["User"]] = relationship(back_populates="jobs")
+
+    __table_args__ = (
+        # The atomic guarantee idempotency depends on: at most one *active*
+        # (non-failed) row per (idempotency_scope, idempotency_key). A
+        # concurrent duplicate INSERT for the same pair fails here at the
+        # database level rather than racing in application code (see
+        # DbJobStore.create_idempotent). A failed job is deliberately
+        # excluded from the predicate -- once a job fails, Postgres drops
+        # its entry from this partial index automatically on that UPDATE,
+        # which is what lets a retry after a genuine failure create a fresh
+        # job under the same key instead of being permanently stuck.
+        Index(
+            "ix_jobs_idempotency_active",
+            "idempotency_scope",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL AND status <> 'failed'"),
+        ),
+    )

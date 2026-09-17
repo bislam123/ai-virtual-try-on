@@ -5,9 +5,10 @@ Frontend -> API route -> **this service** -> VirtualTryOnProvider -> model
 store, the storage service, and the provider together.
 """
 
+import hashlib
 import io
 import logging
-from typing import Optional
+from typing import Optional, Tuple
 
 from PIL import Image
 
@@ -23,8 +24,42 @@ GENERIC_FAILURE_MESSAGE = (
     "or try again in a moment."
 )
 
+IDEMPOTENCY_CONFLICT_MESSAGE = (
+    "This Idempotency-Key was already used for a different try-on request. "
+    "Use a new Idempotency-Key for a new request."
+)
+
 PERSON_FILENAME = "person.png"
 GARMENT_FILENAME = "garment.png"
+
+
+def _idempotency_fingerprint(
+    category: str,
+    garment_photo_type: str,
+    requested_num_timesteps: int,
+    seed: int,
+    person_bytes: bytes,
+    garment_bytes: bytes,
+) -> str:
+    """What "the same request" means for POST /api/try-on's Idempotency-Key
+    handling: every field the client actually controls, hashed together.
+    Deliberately requested_num_timesteps -- the value as submitted, before
+    any plan-cap clamping -- not the clamped value a job actually runs
+    with: clamping is a server-side policy detail, not something that
+    should make two otherwise-identical client requests look "different".
+    """
+    hasher = hashlib.sha256()
+    hasher.update(category.encode())
+    hasher.update(b"|")
+    hasher.update(garment_photo_type.encode())
+    hasher.update(b"|")
+    hasher.update(str(requested_num_timesteps).encode())
+    hasher.update(b"|")
+    hasher.update(str(seed).encode())
+    hasher.update(b"|")
+    hasher.update(hashlib.sha256(person_bytes).digest())
+    hasher.update(hashlib.sha256(garment_bytes).digest())
+    return hasher.hexdigest()
 
 
 class TryOnService:
@@ -67,6 +102,95 @@ class TryOnService:
         self.storage.save_temp_upload(job.id, PERSON_FILENAME, _to_png_bytes(person_image))
         self.storage.save_temp_upload(job.id, GARMENT_FILENAME, _to_png_bytes(garment_image))
         return job
+
+    def find_idempotent_job(
+        self,
+        *,
+        idempotency_scope: str,
+        idempotency_key: str,
+        category: str,
+        garment_photo_type: str,
+        requested_num_timesteps: int,
+        seed: int,
+        person_bytes: bytes,
+        garment_bytes: bytes,
+    ) -> Optional[Job]:
+        """Cheap, read-only pre-check for POST /api/try-on's Idempotency-Key
+        handling, called *before* the quota check -- so a genuine retry of
+        an already-successful (or already-in-flight) request is never
+        incorrectly blocked by a quota limit that request itself already
+        counts against. Returns the existing job on a match, None if this
+        key hasn't been used yet, or raises 409 if it *has* been used but
+        for a materially different request (see _idempotency_fingerprint).
+
+        This is a courtesy fast path only, with its own (harmless) TOCTOU
+        gap: true correctness under genuinely concurrent duplicate
+        requests comes from start_job_idempotent/JobStore.create_idempotent
+        below, not from this method.
+        """
+        job = self.job_store.get_by_idempotency_key(idempotency_scope, idempotency_key)
+        if job is None:
+            return None
+        fingerprint = _idempotency_fingerprint(
+            category, garment_photo_type, requested_num_timesteps, seed, person_bytes, garment_bytes
+        )
+        if job.idempotency_fingerprint != fingerprint:
+            raise UserFacingError(IDEMPOTENCY_CONFLICT_MESSAGE, status_code=409)
+        return job
+
+    def start_job_idempotent(
+        self,
+        person_image: Image.Image,
+        garment_image: Image.Image,
+        category: GarmentCategory,
+        num_timesteps: int,
+        guidance_scale: float,
+        seed: int,
+        idempotency_scope: str,
+        idempotency_key: str,
+        requested_num_timesteps: int,
+        person_bytes: bytes,
+        garment_bytes: bytes,
+        user_id: Optional[int] = None,
+        client_ip: Optional[str] = None,
+        garment_photo_type: GarmentPhotoType = "flat-lay",
+    ) -> Tuple[Job, bool]:
+        """Same contract as start_job, but deduplicates by
+        (idempotency_scope, idempotency_key): a concurrent or retried
+        submission of the *same* request (per _idempotency_fingerprint)
+        reuses the original job instead of starting a second, expensive AI
+        generation; the same key used for a materially different request
+        is rejected with 409 rather than silently reused.
+
+        Returns (job, created) -- created is False when an existing job
+        was reused, so the caller knows not to schedule run_job() again
+        (avoiding it is the entire point). Atomicity under truly
+        concurrent duplicate requests comes from
+        JobStore.create_idempotent, not from this method or from
+        find_idempotent_job above.
+        """
+        fingerprint = _idempotency_fingerprint(
+            category, garment_photo_type, requested_num_timesteps, seed, person_bytes, garment_bytes
+        )
+        job, created = self.job_store.create_idempotent(
+            idempotency_scope=idempotency_scope,
+            idempotency_key=idempotency_key,
+            idempotency_fingerprint=fingerprint,
+            user_id=user_id,
+            category=category,
+            num_timesteps=num_timesteps,
+            guidance_scale=guidance_scale,
+            seed=seed,
+            client_ip=client_ip,
+            garment_photo_type=garment_photo_type,
+        )
+        if not created:
+            if job.idempotency_fingerprint != fingerprint:
+                raise UserFacingError(IDEMPOTENCY_CONFLICT_MESSAGE, status_code=409)
+            return job, False
+        self.storage.save_temp_upload(job.id, PERSON_FILENAME, _to_png_bytes(person_image))
+        self.storage.save_temp_upload(job.id, GARMENT_FILENAME, _to_png_bytes(garment_image))
+        return job, True
 
     def run_job(self, job_id: str) -> None:
         """The actual (slow) work. Runs in a background thread."""

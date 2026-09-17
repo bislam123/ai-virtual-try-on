@@ -34,6 +34,9 @@ def get_quota_service(request: Request) -> QuotaService:
     return request.app.state.quota_service
 
 
+MAX_IDEMPOTENCY_KEY_LENGTH = 255  # matches JobRecord.idempotency_key's column width
+
+
 @router.post("", response_model=TryOnJobCreated, status_code=202)
 async def create_try_on_job(
     request: Request,
@@ -62,6 +65,92 @@ async def create_try_on_job(
             detail=f"Too many try-on requests. Please try again in about {limit_result.retry_after_seconds} seconds.",
             headers={"Retry-After": str(limit_result.retry_after_seconds)},
         )
+
+    # Optional client-supplied idempotency protection against double taps,
+    # network retries, and mobile connection instability creating a second,
+    # expensive AI job for what the client considers one request (see
+    # services/tryon_service.py's find_idempotent_job/start_job_idempotent).
+    # Scoped the same way as client_key above -- "user:<id>" or "ip:<ip>" --
+    # so one user (or one anonymous caller's IP) can never collide with, or
+    # reuse, another's key: there is no global key namespace.
+    idempotency_key = request.headers.get("Idempotency-Key")
+    if idempotency_key is not None:
+        idempotency_key = idempotency_key.strip()
+        if not idempotency_key or len(idempotency_key) > MAX_IDEMPOTENCY_KEY_LENGTH:
+            raise UserFacingError(
+                f"Idempotency-Key must be a non-empty string of at most {MAX_IDEMPOTENCY_KEY_LENGTH} characters.",
+                status_code=400,
+            )
+
+    if idempotency_key is not None:
+        # A deliberately separate path from the (unchanged, below) one a
+        # request with no Idempotency-Key takes -- old clients that never
+        # send this header must keep hitting the exact original code, in
+        # the exact original order, not a generalization of this one.
+        if category not in VALID_CATEGORIES:
+            raise HTTPException(status_code=400, detail="category must be one of: tops, bottoms, one-pieces.")
+        if garment_photo_type not in VALID_GARMENT_PHOTO_TYPES:
+            raise UserFacingError(
+                "We support plain clothing/product photos or photos of the item "
+                "worn by a person. Please upload one of those instead."
+            )
+
+        person_bytes = await person_image.read()
+        garment_bytes = await garment_image.read()
+
+        # Read-only pre-check, ahead of the quota check on purpose: a
+        # genuine retry of an already-successful (or already-in-flight)
+        # request must never be blocked by a quota limit that request
+        # itself already counts against. Raises 409 itself if this key was
+        # already used for a materially different request.
+        existing = service.find_idempotent_job(
+            idempotency_scope=client_key,
+            idempotency_key=idempotency_key,
+            category=category,
+            garment_photo_type=garment_photo_type,
+            requested_num_timesteps=num_timesteps,
+            seed=seed,
+            person_bytes=person_bytes,
+            garment_bytes=garment_bytes,
+        )
+        if existing is not None:
+            return TryOnJobCreated(job_id=existing.id, status=existing.status)
+
+        plan_name = user.plan if user else DEFAULT_PLAN_NAME
+        quota_status = quota_service.get_status(
+            user_id=user.id if user else None,
+            client_ip=None if user else client_ip,
+            plan_name=plan_name,
+        )
+        if quota_status.is_exceeded:
+            raise UserFacingError(quota_exceeded_message(quota_status), status_code=429)
+
+        plan_cap = quota_status.max_num_timesteps
+        effective_max = settings.max_num_timesteps if plan_cap is None else min(settings.max_num_timesteps, plan_cap)
+        clamped_steps = max(settings.min_num_timesteps, min(effective_max, num_timesteps))
+
+        person_pil = validate_and_load_image(person_bytes, "Your photo")
+        garment_pil = validate_and_load_image(garment_bytes, "The clothing photo")
+
+        job, created = service.start_job_idempotent(
+            person_image=person_pil,
+            garment_image=garment_pil,
+            category=category,  # type: ignore[arg-type]
+            num_timesteps=clamped_steps,
+            guidance_scale=settings.default_guidance_scale,
+            seed=seed,
+            idempotency_scope=client_key,
+            idempotency_key=idempotency_key,
+            requested_num_timesteps=num_timesteps,
+            person_bytes=person_bytes,
+            garment_bytes=garment_bytes,
+            user_id=user.id if user else None,
+            client_ip=client_ip,
+            garment_photo_type=garment_photo_type,  # type: ignore[arg-type]
+        )
+        if created:
+            background_tasks.add_task(service.run_job, job.id)
+        return TryOnJobCreated(job_id=job.id, status=job.status)
 
     # The "Usage quota" stage of User -> Account -> Plan -> Usage quota ->
     # AI generation (brief sections 4/23) — distinct from the rate limiter

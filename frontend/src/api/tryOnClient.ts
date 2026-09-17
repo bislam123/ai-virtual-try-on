@@ -8,13 +8,21 @@ export async function submitTryOnJob(
   garmentImage: File,
   category: GarmentCategory,
   token?: string | null,
+  idempotencyKey?: string,
 ): Promise<TryOnJobCreated> {
   const form = new FormData();
   form.append("person_image", personImage);
   form.append("garment_image", garmentImage);
   form.append("category", category);
 
-  const response = await apiFetch("/api/try-on", { method: "POST", body: form }, token);
+  // Optional: protects against double taps and network/mobile retries
+  // resubmitting the same photos as a second, separately-billed AI job --
+  // see useTryOnFlow.ts for how the key is generated/reused and
+  // backend/app/api/tryon.py for the server-side handling. Old backends
+  // that don't recognize this header just ignore it (unknown headers are
+  // never rejected), so this is safe to always send.
+  const headers = idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined;
+  const response = await apiFetch("/api/try-on", { method: "POST", body: form, headers }, token);
   return (await response.json()) as TryOnJobCreated;
 }
 

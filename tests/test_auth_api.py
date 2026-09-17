@@ -10,6 +10,7 @@ Run with: ai\\.venv\\Scripts\\python.exe -m pytest tests/test_auth_api.py
 """
 
 import io
+import threading
 import uuid
 
 import pytest
@@ -23,7 +24,7 @@ from backend.app.api import auth as auth_module
 from backend.app.api import tryon as tryon_module
 from backend.app.api import usage as usage_module
 from backend.app.core.errors import configure_exception_handlers
-from backend.app.db import Plan, User, engine, get_session
+from backend.app.db import JobRecord, Plan, User, engine, get_session
 from backend.app.providers.base import TryOnRequest, TryOnResult, VirtualTryOnProvider
 from backend.app.services.db_job_store import DbJobStore
 from backend.app.services.quota_service import QuotaService
@@ -505,6 +506,82 @@ def test_anonymous_job_remains_viewable_by_anyone_holding_the_id(client, test_em
     token = signup(client, test_email).json()["access_token"]
     signed_in_resp = client.get(f"/api/try-on/{anon_job_id}", headers={"Authorization": f"Bearer {token}"})
     assert signed_in_resp.status_code == 200
+
+
+# --- Idempotency protection for POST /api/try-on ----------------------------
+#
+# tests/test_tryon_api.py covers the fast, InMemoryJobStore-backed cases
+# (same key/same request, conflict, concurrency, invalid/failed requests
+# not poisoning the key). These cover what specifically needs a real,
+# signed-in user or the real database-level unique constraint
+# (jobs.ix_jobs_idempotency_active) instead of the in-memory lock.
+
+
+def test_different_signed_in_users_can_independently_reuse_the_same_idempotency_key(
+    client, test_email, other_test_email
+):
+    """No global idempotency-key namespace: the scope is "user:<id>" (see
+    api/tryon.py's client_key), so two different signed-in users using the
+    literal same key string must not interfere with each other."""
+    token_a = signup(client, test_email).json()["access_token"]
+    token_b = signup(client, other_test_email).json()["access_token"]
+    headers = {"Idempotency-Key": "shared-literal-key"}
+
+    resp_a = _submit(client, headers={**headers, "Authorization": f"Bearer {token_a}"})
+    resp_b = _submit(client, headers={**headers, "Authorization": f"Bearer {token_b}"})
+
+    assert resp_a.status_code == 202, resp_a.text
+    assert resp_b.status_code == 202, resp_b.text
+    assert resp_a.json()["job_id"] != resp_b.json()["job_id"]
+
+
+def test_idempotent_retry_does_not_double_charge_quota(tmp_path, test_email):
+    client = TestClient(make_test_app(tmp_path, quota_service=QuotaService()))
+    token = signup(client, test_email).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}", "Idempotency-Key": "quota-retry-key"}
+
+    first = _submit(client, headers=headers)
+    assert first.status_code == 202, first.text
+
+    before = client.get("/api/usage/me", headers=headers).json()
+    assert before["used_today"] == 1
+
+    retry = _submit(client, headers=headers)
+    assert retry.status_code == 202, retry.text
+    assert retry.json()["job_id"] == first.json()["job_id"]
+
+    after = client.get("/api/usage/me", headers=headers).json()
+    assert after["used_today"] == 1  # the retry did not create (or charge for) a second job
+
+
+def test_concurrent_duplicate_requests_against_real_database_create_only_one_job(client, test_email):
+    """Same race as test_tryon_api.py's InMemoryJobStore version, but
+    against the real DbJobStore -- proving jobs.ix_jobs_idempotency_active
+    (the partial unique index added by this task's migration) genuinely
+    enforces the guarantee at the database level, not just the in-process
+    lock the fast test relies on."""
+    token = signup(client, test_email).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}", "Idempotency-Key": "db-concurrent-key"}
+    barrier = threading.Barrier(2)
+    results = [None, None]
+
+    def submit(i):
+        barrier.wait()
+        results[i] = _submit(client, headers=headers)
+
+    threads = [threading.Thread(target=submit, args=(i,)) for i in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert results[0].status_code == 202, results[0].text
+    assert results[1].status_code == 202, results[1].text
+    assert results[0].json()["job_id"] == results[1].json()["job_id"]
+
+    with get_session() as session:
+        count = session.query(JobRecord).filter(JobRecord.idempotency_key == "db-concurrent-key").count()
+    assert count == 1
 
 
 # --- Milestone 11: usage quotas, against the real QuotaService --------------

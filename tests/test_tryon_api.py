@@ -10,6 +10,7 @@ Run with: ai\\.venv\\Scripts\\python.exe -m pytest
 """
 
 import io
+import threading
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -76,9 +77,10 @@ def _submit(client, **overrides):
         "garment_image": ("garment.png", _png_bytes("green"), "image/png"),
     }
     files.update(overrides.pop("files", {}))
+    headers = overrides.pop("headers", None)
     data = {"category": "tops"}
     data.update(overrides)
-    return client.post("/api/try-on", files=files, data=data)
+    return client.post("/api/try-on", files=files, data=data, headers=headers)
 
 
 def test_create_job_and_poll_to_completion(tmp_path):
@@ -196,6 +198,166 @@ def test_quota_exceeded_blocks_submission_with_clear_message(tmp_path):
     resp = _submit(client)
     assert resp.status_code == 429
     assert "generations for today" in resp.json()["detail"]
+
+
+def test_no_idempotency_key_creates_separate_jobs_as_before(tmp_path):
+    """Old clients that never send Idempotency-Key must keep working
+    exactly as before this feature existed -- no accidental deduplication
+    just because two submissions happen to look identical."""
+    client = TestClient(make_test_app(tmp_path))
+    first = _submit(client).json()["job_id"]
+    second = _submit(client).json()["job_id"]
+    assert first != second
+
+
+def test_same_idempotency_key_and_same_request_returns_same_job(tmp_path):
+    provider = CapturingProvider()
+    client = TestClient(make_test_app(tmp_path, provider=provider))
+    headers = {"Idempotency-Key": "retry-key-1"}
+
+    first = _submit(client, headers=headers)
+    assert first.status_code == 202, first.text
+    second = _submit(client, headers=headers)
+    assert second.status_code == 202, second.text
+
+    assert first.json()["job_id"] == second.json()["job_id"]
+    # Only one AI generation actually ran for the two submissions.
+    assert provider.received_request is not None
+
+
+def test_same_idempotency_key_and_same_request_only_runs_generation_once(tmp_path):
+    call_count = {"n": 0}
+
+    class CountingProvider(VirtualTryOnProvider):
+        def generate(self, request: TryOnRequest) -> TryOnResult:
+            call_count["n"] += 1
+            return TryOnResult(image=Image.new("RGB", (64, 64), color="red"))
+
+    client = TestClient(make_test_app(tmp_path, provider=CountingProvider()))
+    headers = {"Idempotency-Key": "retry-key-2"}
+    _submit(client, headers=headers)
+    _submit(client, headers=headers)
+    assert call_count["n"] == 1
+
+
+def test_same_idempotency_key_with_different_category_is_rejected(tmp_path):
+    client = TestClient(make_test_app(tmp_path))
+    headers = {"Idempotency-Key": "conflict-key-1"}
+
+    first = _submit(client, headers=headers, category="tops")
+    assert first.status_code == 202
+
+    second = _submit(client, headers=headers, category="bottoms")
+    assert second.status_code == 409
+    assert "different try-on request" in second.json()["detail"]
+
+
+def test_same_idempotency_key_with_different_images_is_rejected(tmp_path):
+    client = TestClient(make_test_app(tmp_path))
+    headers = {"Idempotency-Key": "conflict-key-2"}
+
+    first = _submit(client, headers=headers)
+    assert first.status_code == 202
+
+    second = _submit(client, headers=headers, files={"person_image": ("person.png", _png_bytes("yellow"), "image/png")})
+    assert second.status_code == 409
+    assert "different try-on request" in second.json()["detail"]
+
+
+def test_invalid_request_with_idempotency_key_does_not_poison_it(tmp_path):
+    """A validation failure must never reserve the key -- a follow-up
+    request with the same key but now-valid content is a fresh,
+    unrelated submission, not a "conflict"."""
+    client = TestClient(make_test_app(tmp_path))
+    headers = {"Idempotency-Key": "poison-check-1"}
+
+    bad = _submit(client, headers=headers, category="shoes")
+    assert bad.status_code == 400
+
+    good = _submit(client, headers=headers, category="tops")
+    assert good.status_code == 202, good.text
+
+
+def test_failed_job_retry_with_same_key_creates_a_new_job(tmp_path):
+    """A job that failed during generation must not permanently occupy its
+    idempotency key -- retrying is exactly what the user should be able to
+    do, and it's a genuine second attempt, not a duplicate to collapse."""
+    client = TestClient(make_test_app(tmp_path, provider=BrokenProvider()))
+    headers = {"Idempotency-Key": "retry-after-failure"}
+
+    first = _submit(client, headers=headers)
+    assert first.status_code == 202
+    first_job_id = first.json()["job_id"]
+    assert client.get(f"/api/try-on/{first_job_id}").json()["status"] == "failed"
+
+    second = _submit(client, headers=headers)
+    assert second.status_code == 202
+    second_job_id = second.json()["job_id"]
+    assert second_job_id != first_job_id
+
+
+def test_concurrent_duplicate_requests_with_same_key_create_only_one_job(tmp_path):
+    """The core double-tap/network-retry scenario, with genuine threads --
+    not just two sequential calls -- racing on the exact same
+    (scope, key). InMemoryJobStore.create_idempotent's lock is what must
+    make this safe, not request ordering luck."""
+    call_count = {"n": 0}
+    lock = threading.Lock()
+
+    class CountingProvider(VirtualTryOnProvider):
+        def generate(self, request: TryOnRequest) -> TryOnResult:
+            with lock:
+                call_count["n"] += 1
+            return TryOnResult(image=Image.new("RGB", (64, 64), color="red"))
+
+    client = TestClient(make_test_app(tmp_path, provider=CountingProvider()))
+    headers = {"Idempotency-Key": "concurrent-key-1"}
+    barrier = threading.Barrier(2)
+    results = [None, None]
+
+    def submit(i):
+        barrier.wait()
+        results[i] = _submit(client, headers=headers)
+
+    threads = [threading.Thread(target=submit, args=(i,)) for i in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert results[0].status_code == 202, results[0].text
+    assert results[1].status_code == 202, results[1].text
+    assert results[0].json()["job_id"] == results[1].json()["job_id"]
+    assert call_count["n"] == 1
+
+
+def test_different_anonymous_clients_can_independently_reuse_the_same_key(tmp_path):
+    """No global idempotency-key namespace: two different anonymous
+    callers (different source IPs) using the literal same key string must
+    not interfere with each other."""
+    app = make_test_app(tmp_path)
+    client_a = TestClient(app, client=("1.1.1.1", 12345))
+    client_b = TestClient(app, client=("2.2.2.2", 12345))
+    headers = {"Idempotency-Key": "shared-literal-key"}
+
+    resp_a = _submit(client_a, headers=headers)
+    resp_b = _submit(client_b, headers=headers)
+
+    assert resp_a.status_code == 202
+    assert resp_b.status_code == 202
+    assert resp_a.json()["job_id"] != resp_b.json()["job_id"]
+
+
+def test_empty_idempotency_key_header_is_rejected(tmp_path):
+    client = TestClient(make_test_app(tmp_path))
+    resp = _submit(client, headers={"Idempotency-Key": "   "})
+    assert resp.status_code == 400
+
+
+def test_oversized_idempotency_key_header_is_rejected(tmp_path):
+    client = TestClient(make_test_app(tmp_path))
+    resp = _submit(client, headers={"Idempotency-Key": "x" * 256})
+    assert resp.status_code == 400
 
 
 def test_num_timesteps_clamped_by_plan_cap(tmp_path):
