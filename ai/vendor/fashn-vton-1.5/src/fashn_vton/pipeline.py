@@ -41,6 +41,16 @@ from .utils import (
 )
 
 
+def _dwpose_device_string(device: torch.device) -> str:
+    """Explicit device string DWPose's Wholebody accepts.
+
+    Wholebody.__init__ (fashn_vton/dwpose/wholebody.py) always does
+    int(device.split(":")[-1]) for any device starting with "cuda", so a bare
+    "cuda" (no index) raises ValueError there. An explicit index is required.
+    """
+    return f"cuda:{device.index or 0}" if device.type == "cuda" else "cpu"
+
+
 @dataclass
 class PipelineOutput:
     """Pipeline output container."""
@@ -136,7 +146,7 @@ class TryOnPipeline:
         dwpose_dir = os.path.join(self.weights_dir, "dwpose")
         self.logger.info(f"Loading DWPose from {dwpose_dir}")
 
-        dwpose_device = f"cuda:{self.device.index or 0}" if self.device.type == "cuda" else "cpu"
+        dwpose_device = _dwpose_device_string(self.device)
         self.pose_model = DWposeDetector(checkpoints_dir=dwpose_dir, device=dwpose_device)
 
         self.logger.info("DWPose loaded")
@@ -153,7 +163,7 @@ class TryOnPipeline:
         )
         self.logger.info(f"Loading MediaPipeBodyParser from {mediapipe_model_path}")
 
-        hp_device = "cuda" if self.device.type == "cuda" else "cpu"
+        hp_device = _dwpose_device_string(self.device)
         self.hp_model = MediaPipeBodyParser(
             model_path=mediapipe_model_path, dwpose_checkpoints_dir=dwpose_dir, device=hp_device
         )
