@@ -7,8 +7,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from .api import auth, extraction, tryon, usage
 from .config import settings
 from .core.errors import configure_exception_handlers
+from .db import get_session
 from .providers.selfhosted import SelfHostedVTONProvider
 from .services.db_job_store import DbJobStore
+from .services.job_recovery import recover_stale_processing_jobs
 from .services.quota_service import QuotaService
 from .services.rate_limiter import RateLimiter
 from .services.storage import LocalStorageService
@@ -30,8 +32,23 @@ async def lifespan(app: FastAPI):
     # Table creation is handled by Alembic migrations (backend/alembic/),
     # not here — run `alembic upgrade head` before starting the server.
     job_store = DbJobStore()
-    provider = SelfHostedVTONProvider(weights_dir=settings.weights_dir, device=settings.device)
+    provider = SelfHostedVTONProvider(
+        weights_dir=settings.weights_dir,
+        device=settings.device,
+        inference_timeout_seconds=settings.inference_timeout_seconds,
+        lock_acquire_timeout_seconds=settings.provider_lock_acquire_timeout_seconds,
+    )
     app.state.tryon_service = TryOnService(provider=provider, storage=storage, job_store=job_store)
+    # Recovers any job left in status=processing by a previous process
+    # instance being killed mid-generation (see services/job_recovery.py).
+    # Run once here so a restart clears these quickly, not just whenever
+    # the next scheduled cleanup sweep happens to run.
+    with get_session() as recovery_session:
+        recovery_result = recover_stale_processing_jobs(
+            recovery_session, storage, settings.stale_job_threshold_minutes
+        )
+    if recovery_result.recovered:
+        logger.warning("Recovered %d stale processing job(s) at startup.", recovery_result.recovered)
     app.state.rate_limiter = RateLimiter(settings.rate_limit_max_requests, settings.rate_limit_window_seconds)
     app.state.extraction_rate_limiter = RateLimiter(
         settings.extraction_rate_limit_max_requests, settings.extraction_rate_limit_window_seconds

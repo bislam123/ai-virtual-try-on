@@ -56,6 +56,33 @@ class Settings(BaseSettings):
     max_num_timesteps: int = 50
     default_guidance_scale: float = 1.5
 
+    # How long a single generate() call may run before SelfHostedVTONProvider
+    # gives up waiting and reports failure -- NOT a true kill of the
+    # underlying computation (see providers/selfhosted.py's module
+    # docstring for why that isn't possible with this architecture without
+    # a separate worker process). Generous default (1h) covers this
+    # project's documented CPU-dev worst case (10-70+ minutes per
+    # docs/DEVELOPMENT.md); a real GPU deployment, where a legitimate
+    # generation takes seconds, should override this much tighter.
+    inference_timeout_seconds: int = 3600
+    # How long a caller waits to acquire the provider's internal lock
+    # before giving up -- covers both "a legitimately long generation is
+    # already running" and "an earlier one hit inference_timeout_seconds
+    # and is still holding the lock" (see selfhosted.py). Same reasoning
+    # as inference_timeout_seconds for the default.
+    provider_lock_acquire_timeout_seconds: int = 3600
+
+    # How long a job may sit in status=processing before the recovery sweep
+    # (services/job_recovery.py, run at app startup and by
+    # scripts/cleanup_expired_results.py) treats it as abandoned -- e.g.
+    # the server process was killed mid-generation -- and marks it failed.
+    # Deliberately larger than inference_timeout_seconds above: the
+    # in-process timeout is the fast path for a hang in a still-running
+    # process; this is the slower backstop for when the process itself is
+    # gone and nothing else could mark the job failed. Minutes, not
+    # seconds: legitimate CPU-dev jobs can take over an hour.
+    stale_job_threshold_minutes: int = 120
+
     # --- Storage ---
     storage_dir: str = str(PROJECT_ROOT / "backend" / "storage")
 

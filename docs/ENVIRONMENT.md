@@ -33,6 +33,9 @@ All read by `backend/app/config.py` (`pydantic-settings`, prefix `AITRYON_`), wi
 | `AITRYON_DEVICE` | `cpu` | `cuda` on a GPU inference host |
 | `AITRYON_DEFAULT_NUM_TIMESTEPS` | `30` | Diffusion steps per generation |
 | `AITRYON_MIN_NUM_TIMESTEPS` / `AITRYON_MAX_NUM_TIMESTEPS` | `4` / `50` | Clamp range for the request param |
+| `AITRYON_INFERENCE_TIMEOUT_SECONDS` | `3600` | How long `SelfHostedVTONProvider.generate()` waits before giving up and reporting failure — **not a true hard kill**, see `providers/selfhosted.py`'s module docstring. Lower this substantially (e.g. `120`) on a real GPU deployment. |
+| `AITRYON_PROVIDER_LOCK_ACQUIRE_TIMEOUT_SECONDS` | `3600` | How long a request waits to acquire the provider's internal lock before failing as "busy" |
+| `AITRYON_STALE_JOB_THRESHOLD_MINUTES` | `120` | How long a job may sit in `processing` (e.g. the process was killed mid-generation) before `services/job_recovery.py` marks it `failed` |
 | `AITRYON_STORAGE_DIR` | `backend/storage` | Local temp/results file root |
 | `AITRYON_MAX_UPLOAD_SIZE_MB` | `10` | Upload size cap |
 | `AITRYON_MAX_IMAGE_DIMENSION_PX` | `4096` | Upload dimension cap |
