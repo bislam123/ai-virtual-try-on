@@ -314,12 +314,21 @@ def test_delete_account_rejects_wrong_password(client, test_email):
     headers = {"Authorization": f"Bearer {token}"}
 
     resp = client.request("DELETE", "/api/auth/me", json={"password": "wrong-password"}, headers=headers)
-    assert resp.status_code == 401
+    # 403, not 401: the bearer token itself is valid -- this is a wrong
+    # confirmation password, not an invalid session. See delete_account's
+    # docstring (api/auth.py) for why that distinction matters now that a
+    # 401 on a token-bearing request means "sign this session out globally"
+    # to the frontend (api/http.ts's session-expired listener).
+    assert resp.status_code == 403
     assert resp.json()["detail"] == "Incorrect email or password."
 
     # Account must still exist and be usable — a rejected deletion attempt is a no-op.
     still_there = client.post("/api/auth/login", json={"email": test_email, "password": "right-password"})
     assert still_there.status_code == 200
+
+    # And the still-valid token must still work normally -- a wrong
+    # confirmation password must never itself revoke the session.
+    assert client.get("/api/auth/me", headers=headers).status_code == 200
 
 
 def test_delete_account_removes_account_jobs_and_result_files(client, tmp_path, test_email):
@@ -353,6 +362,28 @@ def test_delete_account_removes_account_jobs_and_result_files(client, tmp_path, 
     # truly gone, not just marked deleted (the email column is unique).
     resignup = signup(client, test_email, password="a-new-password")
     assert resignup.status_code == 201
+
+
+def test_previously_issued_token_rejected_by_every_protected_endpoint_after_deletion(client, test_email):
+    """test_delete_account_removes_account_jobs_and_result_files above
+    already confirms this for /me; this checks a second, differently
+    shaped protected endpoint (/save, which requires get_current_user_required
+    same as /me but is a POST, not a GET) so the guarantee isn't just
+    "works for the one endpoint we happened to test". No auth_version
+    trick needed here (unlike test_token_versioning.py's stale-version
+    tests) -- deletion removes the row entirely, so
+    get_current_user_optional's `user is None` check alone already
+    accounts for this; see that function's docstring."""
+    token = signup(client, test_email, password="right-password").json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    job_id = _submit(client, headers=headers).json()["job_id"]
+
+    resp = client.request("DELETE", "/api/auth/me", json={"password": "right-password"}, headers=headers)
+    assert resp.status_code == 204
+
+    save_resp = client.post(f"/api/try-on/{job_id}/save", headers=headers)
+    assert save_resp.status_code == 401
+    assert token not in save_resp.text
 
 
 def test_authenticated_job_can_be_saved_by_its_owner(client, test_email):

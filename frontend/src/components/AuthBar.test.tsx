@@ -97,8 +97,9 @@ describe("AuthBar — delete account", () => {
   it("on failure (e.g. wrong password), shows the error and leaves the account fully signed in", async () => {
     // A real ApiError, matching what useAuth().deleteAccount() actually
     // rejects with -- DeleteAccountModal only shows an ApiError's own
-    // message, falling back to a generic one for anything else.
-    const onDeleteAccount = vi.fn().mockRejectedValue(new ApiError("Incorrect email or password.", 401));
+    // message, falling back to a generic one for anything else. 403, not
+    // 401: a wrong confirmation password doesn't invalidate the session.
+    const onDeleteAccount = vi.fn().mockRejectedValue(new ApiError("Incorrect email or password.", 403));
     const onLogout = vi.fn();
     const user = userEvent.setup();
     render(

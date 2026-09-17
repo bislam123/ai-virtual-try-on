@@ -29,15 +29,22 @@ describe("deleteAccount", () => {
     expect(headers.get("Content-Type")).toBe("application/json");
   });
 
-  it("surfaces a wrong-password (401) response as an ApiError with the backend's message", async () => {
+  it("surfaces a wrong-password (403) response as an ApiError with the backend's message", async () => {
+    // 403, not 401: the bearer token itself is valid (that's what got this
+    // request past auth in the first place) -- this is a wrong
+    // confirmation password, not an invalid/revoked session. See
+    // backend/app/api/auth.py's delete_account for why that distinction
+    // matters (401 on a token-bearing request means "sign this session
+    // out globally" -- see api/http.ts's session-expired listener -- and a
+    // mistyped confirmation password must never trigger that).
     const mockFetch = vi.mocked(globalThis.fetch);
     mockFetch.mockResolvedValue(
-      new Response(JSON.stringify({ detail: "Incorrect email or password." }), { status: 401 }),
+      new Response(JSON.stringify({ detail: "Incorrect email or password." }), { status: 403 }),
     );
 
     await expect(deleteAccount("wrong-password", "tok-123")).rejects.toMatchObject({
       message: "Incorrect email or password.",
-      status: 401,
+      status: 403,
     });
     await expect(deleteAccount("wrong-password", "tok-123")).rejects.toBeInstanceOf(ApiError);
   });

@@ -49,6 +49,20 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     plan: Mapped[str] = mapped_column(ForeignKey("plans.name"), nullable=False, default="free")
+    # Server-side JWT revocation, lightweight version: every access token
+    # embeds the auth_version it was issued under (see auth/security.py's
+    # create_access_token); auth/dependencies.py's get_current_user_optional
+    # rejects a token whose embedded version doesn't match this column's
+    # *current* value. Bumping this integer is therefore "revoke every
+    # existing token for this user" without a token blocklist/session table
+    # — no per-token bookkeeping, just one integer per user, checked against
+    # the one row a request already has to load to authenticate at all.
+    # Starts at 1 (not 0) purely so a token that's missing the claim
+    # entirely can never accidentally coincide with a real value by matching
+    # an unset/zero default — see decode_access_token's docstring for why a
+    # missing claim is rejected outright anyway, making this belt-and-braces
+    # rather than load-bearing on its own.
+    auth_version: Mapped[int] = mapped_column(nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     # cascade: deleting a user deletes their job records too — no orphaned

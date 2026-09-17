@@ -7,6 +7,7 @@ import {
   login as apiLogin,
   signup as apiSignup,
 } from "../api/authClient";
+import { setSessionExpiredListener } from "../api/http";
 import type { UserResponse } from "../types/auth";
 
 const TOKEN_STORAGE_KEY = "aitryon_auth_token";
@@ -64,6 +65,27 @@ export function useAuth() {
       cancelled = true;
     };
   }, [token]);
+
+  // Registered once, for the lifetime of this hook instance (an app only
+  // ever mounts one) -- see api/http.ts's setSessionExpiredListener for why
+  // this lives at the fetch layer rather than being threaded through every
+  // individual API call site. Fires for ANY apiFetch call anywhere in the
+  // app that carried the current token and got a 401 back, not just the
+  // getMe() check above -- e.g. a stale tab still open after the token was
+  // revoked elsewhere (password reset) tries to save a result and gets
+  // signed out right then, rather than silently failing while still
+  // looking signed in. Deliberately does the same three-line clear inline
+  // rather than calling logout() -- matches the getMe .catch() above, which
+  // does the same for the same reason (no reason to funnel this through
+  // logout()'s own name/semantics when this isn't a user-initiated logout).
+  useEffect(() => {
+    setSessionExpiredListener(() => {
+      setToken(null);
+      writeStoredToken(null);
+      setUser(null);
+    });
+    return () => setSessionExpiredListener(null);
+  }, []);
 
   const login = useCallback(async (email: string, password: string) => {
     const { access_token } = await apiLogin(email, password);

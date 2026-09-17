@@ -17,12 +17,23 @@ def get_current_user_optional(
 ) -> Optional[User]:
     if credentials is None:
         return None
-    user_id = decode_access_token(credentials.credentials)
-    if user_id is None:
+    claims = decode_access_token(credentials.credentials)
+    if claims is None:
         return None
     with get_session() as session:
-        user = session.get(User, user_id)
+        user = session.get(User, claims.user_id)
         if user is None:
+            return None
+        # Revocation check: a token stays valid only as long as its
+        # embedded auth_version still matches the live row's. A password
+        # reset (api/auth.py's reset_password) bumps User.auth_version,
+        # which is what makes every token issued before that reset stop
+        # working from this exact check, on its very next use — no
+        # blocklist, no session table, just this one comparison against
+        # data the request already has to load to authenticate at all.
+        # Account deletion needs no equivalent check here: the row is gone
+        # entirely, so `user is None` above already covers it.
+        if user.auth_version != claims.auth_version:
             return None
         session.expunge(user)
         return user

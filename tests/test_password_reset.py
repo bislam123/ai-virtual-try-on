@@ -271,6 +271,58 @@ def test_reset_password_with_valid_token_changes_password(client, test_email, em
     assert login(client, test_email, "old-password-123").status_code == 401
 
 
+# --- reset-password: JWT revocation (session-hardening milestone, 2026-09-17) -
+#
+# Closes the limitation this file previously documented: a token issued
+# before a reset now stops working immediately, via User.auth_version (see
+# db/models.py) rather than staying valid until its natural expiry. See
+# tests/test_token_versioning.py for the underlying claims/version-check
+# mechanics tested in isolation; these test the real reset flow end to end.
+
+
+def test_successful_reset_invalidates_previously_issued_access_token(client, test_email, email_service):
+    old_token = signup(client, test_email, password="old-password-123").json()["access_token"]
+    assert client.get("/api/auth/me", headers={"Authorization": f"Bearer {old_token}"}).status_code == 200
+
+    forgot_password(client, test_email)
+    reset_token = _extract_token(email_service.sent[0][1])
+    assert reset_password(client, reset_token, "new-password-456").status_code == 200
+
+    # The token issued before the reset must no longer work anywhere.
+    stale = client.get("/api/auth/me", headers={"Authorization": f"Bearer {old_token}"})
+    assert stale.status_code == 401
+
+
+def test_new_login_after_reset_issues_a_working_token(client, test_email, email_service):
+    signup(client, test_email, password="old-password-123")
+    forgot_password(client, test_email)
+    reset_token = _extract_token(email_service.sent[0][1])
+    reset_password(client, reset_token, "new-password-456")
+
+    new_token = login(client, test_email, "new-password-456").json()["access_token"]
+
+    resp = client.get("/api/auth/me", headers={"Authorization": f"Bearer {new_token}"})
+    assert resp.status_code == 200
+    assert resp.json()["email"] == test_email
+
+
+def test_reset_does_not_leak_whether_the_reset_token_was_valid_beyond_the_existing_generic_behavior(
+    client, test_email, email_service
+):
+    """The auth_version bump must never change reset-password's existing
+    enumeration/leak-safety contract: an invalid token still gets exactly
+    RESET_TOKEN_INVALID_ERROR, nothing that hints at whether a session was
+    revoked or any other internal detail."""
+    signup(client, test_email, password="old-password-123")
+
+    resp = reset_password(client, "totally-made-up-token", "new-password-456")
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "This password reset link is invalid or has expired. Please request a new one."
+    assert "auth_version" not in resp.text
+    assert "version" not in resp.text.lower()
+
+
 def test_reset_password_invalid_token_rejected(client):
     resp = reset_password(client, "totally-made-up-token", "new-password-456")
     assert resp.status_code == 400
@@ -358,7 +410,15 @@ def test_reset_password_concurrent_attempts_with_same_token_only_one_succeeds(cl
             .filter(PasswordResetToken.user_id == user.id, PasswordResetToken.used_at.isnot(None))
             .count()
         )
+        # auth_version must be bumped exactly once, not twice -- the losing
+        # request's consume_reset_token call returns None and short-circuits
+        # before ever reaching `user.auth_version += 1` (see api/auth.py's
+        # reset_password), so only the single winning UPDATE contributes.
+        # Started at 1 (signup's default), so exactly one successful reset
+        # means exactly 2.
+        final_auth_version = user.auth_version
     assert used_count == 1  # exactly one row claimed, not zero and not two
+    assert final_auth_version == 2
 
 
 def test_new_forgot_password_request_invalidates_earlier_outstanding_token(client, test_email, email_service):

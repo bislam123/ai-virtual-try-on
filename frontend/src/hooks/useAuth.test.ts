@@ -71,7 +71,9 @@ describe("useAuth().deleteAccount", () => {
 
   it("on failure, leaves token and user intact and propagates the error", async () => {
     const result = await signedInHook();
-    mockedAuthClient.deleteAccount.mockRejectedValue(new ApiError("Incorrect email or password.", 401));
+    // 403 (wrong confirmation password), not 401 -- see authClient.test.ts's
+    // matching test for why that distinction matters now.
+    mockedAuthClient.deleteAccount.mockRejectedValue(new ApiError("Incorrect email or password.", 403));
 
     await act(async () => {
       await expect(result.current.deleteAccount("wrong-password")).rejects.toThrow(

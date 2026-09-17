@@ -127,7 +127,7 @@ async def signup(
             session.flush()  # assigns user.id, surfaces the unique-email constraint now
         except IntegrityError:
             raise UserFacingError("An account with that email already exists.", status_code=409)
-        token = create_access_token(user.id)
+        token = create_access_token(user.id, user.auth_version)
     return AuthResponse(access_token=token)
 
 
@@ -147,7 +147,7 @@ async def login(
         if user is None or not verify_password(body.password, user.password_hash):
             # Same message either way — never reveal whether the email is registered.
             raise UserFacingError(GENERIC_LOGIN_ERROR, status_code=401)
-        token = create_access_token(user.id)
+        token = create_access_token(user.id, user.auth_version)
     return AuthResponse(access_token=token)
 
 
@@ -194,25 +194,25 @@ async def reset_password(body: ResetPasswordRequest):
     for why an invalid, expired, and already-used token are all reported
     identically.
 
-    Session/JWT invalidation on password change -- inspected, not
-    implemented: this app's auth is fully stateless (auth/security.py's
-    decode_access_token only verifies a JWT's signature and expiry, no
-    server-side session/allow-list lookup — see that module). There is no
-    revocation mechanism to hook into, and building one (a token
-    blocklist/version column plus a check on every authenticated request)
-    is a materially larger, separate architecture change than this
-    milestone's scope -- explicitly not undertaken here rather than
-    invented ad hoc. Known, accepted limitation: any access token issued
-    before a reset remains valid (up to jwt_expire_minutes, 7 days by
-    default) until it naturally expires. The new password itself is
-    required immediately for any *new* login, which is the property this
-    endpoint can actually guarantee today.
+    Session/JWT invalidation on password change: `user.auth_version` is
+    bumped in the same transaction as the password change itself, which
+    immediately invalidates every access token issued before this moment
+    (see auth/dependencies.py's get_current_user_optional, which rejects
+    any token whose embedded version doesn't match the live row) --
+    closing what was previously a documented, accepted limitation (any
+    token issued before a reset stayed valid until natural expiry). A
+    *new* login after this reset issues a token stamped with the new,
+    current version, so it keeps working normally. This never touches, or
+    is influenced by, whether the reset token itself was valid beyond what
+    consume_reset_token already decided -- the version bump only ever runs
+    after a token has already been successfully claimed.
     """
     with get_session() as session:
         user = consume_reset_token(session, body.token)
         if user is None:
             raise UserFacingError(RESET_TOKEN_INVALID_ERROR, status_code=400)
         user.password_hash = hash_password(body.new_password)
+        user.auth_version += 1
 
     return MessageResponse(message="Your password has been reset. Please sign in with your new password.")
 
@@ -236,11 +236,22 @@ async def delete_account(
     trigger an irreversible destructive action. `user` (from the dependency)
     is detached from its own session by this point, so the id is the only
     field read from it directly; everything else is re-fetched fresh here.
+
+    403, not 401, for a wrong confirmation password: the caller already
+    authenticated successfully (get_current_user_required, above, already
+    accepted their bearer token) -- this check is authorization for one
+    specific destructive action, not identity. Deliberately kept distinct
+    from a genuinely invalid/revoked *token*, which is what 401 means
+    everywhere else in this API: the frontend treats any 401 on a
+    token-bearing request as "this session is no longer valid, sign out"
+    (see frontend/src/api/http.ts's session-expired listener) -- a wrong
+    password typed here must never trigger that, since the token itself,
+    and the rest of the session, are still perfectly valid.
     """
     with get_session() as session:
         db_user = session.get(User, user.id)
         if db_user is None or not verify_password(body.password, db_user.password_hash):
-            raise UserFacingError(GENERIC_LOGIN_ERROR, status_code=401)
+            raise UserFacingError(GENERIC_LOGIN_ERROR, status_code=403)
 
         for job in db_user.jobs:
             storage.delete_result(job.id)
