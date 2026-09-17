@@ -53,6 +53,27 @@ Notes:
 - `ai/vendor/aitryon-bodyparser` is our own small MIT-licensed package — not a fork of anything.
 - Weights land in `ai/models/fashn-vton-1.5/` (gitignored — ~2GB, never commit).
 
+### Installing in Google Colab or other GPU / multi-Python environments
+
+The commands above assume a single, unambiguous `python`/`pip` on PATH — true for the dedicated local venv above, but **not** safe in an environment like Google Colab where multiple Python interpreters coexist (e.g. the notebook kernel's `sys.executable` vs. whatever a bare `!pip` resolves to). If `pip install -e ...` appears to succeed but `import aitryon_bodyparser` / `import fashn_vton` / `import aitryon_preprocessing` still fail with `ModuleNotFoundError` afterward, the editable install almost certainly registered against a *different* interpreter than the one running your cells — it is not a packaging bug in this repo (all three packages use the same, correct `src`-layout `[tool.setuptools.packages.find]` config). Fix: always install with the exact interpreter that will run the code:
+
+```python
+import sys
+!{sys.executable} -m pip install -e ./ai/vendor/aitryon-bodyparser
+!{sys.executable} -m pip install -e ./ai/vendor/fashn-vton-1.5
+!{sys.executable} -m pip install -e ./ai/preprocessing
+```
+
+For a real CUDA GPU (e.g. Colab's T4), also install CUDA-enabled PyTorch (the plain `pip install torch torchvision`, with no `--index-url` override, already pulls the CUDA build) and swap DWPose's ONNX backend from this repo's CPU-only default to the GPU one — mirroring the swap `ai/vendor/fashn-vton-1.5/README.md` already documents in the opposite direction:
+
+```python
+!{sys.executable} -m pip install torch torchvision
+!{sys.executable} -m pip uninstall -y onnxruntime
+!{sys.executable} -m pip install onnxruntime-gpu
+```
+
+`fashn_vton.dwpose.wholebody.Wholebody` already requests `CUDAExecutionProvider` whenever `device` starts with `"cuda"`, and falls back to `CPUExecutionProvider` automatically (a harmless onnxruntime warning, not a crash) when the installed onnxruntime build has no CUDA backend — which is exactly what happens with the plain `onnxruntime` this repo pins for the CPU-only local dev machine. Installing `onnxruntime-gpu` instead, only in a real-GPU environment, is what actually lets DWPose run on the GPU; no source change is needed or should be made for this.
+
 ## Running the first test inference
 
 ```powershell
