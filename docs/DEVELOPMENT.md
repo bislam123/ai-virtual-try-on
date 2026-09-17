@@ -202,7 +202,7 @@ cd backend
 
 **Known limitations, carried forward on purpose:**
 - `backend/scripts/cleanup_expired_results.py` (the "unsaved images are temporary" enforcement) exists and works but isn't wired to a scheduler yet — needs real infra (cron/Task Scheduler/hosted cron), out of scope for this milestone.
-- Account deletion isn't a feature yet (no endpoint) — the cascade behavior is in place for when it is.
+- ~~Account deletion isn't a feature yet (no endpoint)~~ → **Closed**, 2026-09-17. `DELETE /api/auth/me` (`backend/app/api/auth.py`), requires the current password (not just a valid access token — a leaked/stolen token alone must not be enough to trigger an irreversible action). Deletes every job's result image and any leftover temp files via the storage service first, then the user row, which cascades the job rows themselves (the `ON DELETE CASCADE` FK already in place, see above). Tests in `tests/test_auth_api.py`.
 - `plan` is a free-text column defaulting to `"free"`; nothing reads or enforces it yet (Milestone 11).
 
 ## Milestone 7 — Product image extraction

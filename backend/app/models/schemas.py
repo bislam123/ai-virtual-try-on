@@ -16,6 +16,12 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class DeleteAccountRequest(BaseModel):
+    # Requiring the current password (not just a valid access token) means a
+    # leaked/stolen token alone can't trigger this irreversible action.
+    password: str
+
+
 class AuthResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"

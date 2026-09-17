@@ -59,11 +59,9 @@ def make_test_app(tmp_path, quota_service=None):
     app.include_router(tryon_module.router)
     app.include_router(auth_module.router)
     app.include_router(usage_module.router)
-    app.state.tryon_service = TryOnService(
-        provider=FakeProvider(),
-        storage=LocalStorageService(str(tmp_path)),
-        job_store=DbJobStore(),
-    )
+    storage = LocalStorageService(str(tmp_path))
+    app.state.tryon_service = TryOnService(provider=FakeProvider(), storage=storage, job_store=DbJobStore())
+    app.state.storage = storage  # used directly by auth_module's account-deletion endpoint
     app.state.rate_limiter = RateLimiter(max_requests=1000, window_seconds=3600)
     # Permissive by default: anonymous usage is tracked by client IP, which
     # every TestClient request in this file shares — a real QuotaService
@@ -149,6 +147,57 @@ def test_login_unknown_email_same_message_as_wrong_password(client):
     resp = client.post("/api/auth/login", json={"email": "nobody-here@example.com", "password": "whatever"})
     assert resp.status_code == 401
     assert resp.json()["detail"] == "Incorrect email or password."
+
+
+# --- Account deletion -----------------------------------------------------
+
+
+def test_delete_account_requires_auth(client):
+    resp = client.request("DELETE", "/api/auth/me", json={"password": "whatever"})
+    assert resp.status_code == 401
+
+
+def test_delete_account_rejects_wrong_password(client, test_email):
+    token = signup(client, test_email, password="right-password").json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    resp = client.request("DELETE", "/api/auth/me", json={"password": "wrong-password"}, headers=headers)
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "Incorrect email or password."
+
+    # Account must still exist and be usable — a rejected deletion attempt is a no-op.
+    still_there = client.post("/api/auth/login", json={"email": test_email, "password": "right-password"})
+    assert still_there.status_code == 200
+
+
+def test_delete_account_removes_account_jobs_and_result_files(client, tmp_path, test_email):
+    token = signup(client, test_email, password="right-password").json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    job_id = _submit(client, headers=headers).json()["job_id"]
+    assert client.get(f"/api/try-on/{job_id}").json()["status"] == "completed"  # fake provider is instant
+
+    storage = LocalStorageService(str(tmp_path))
+    assert storage.get_result_path(job_id) is not None  # result exists before deletion
+
+    resp = client.request("DELETE", "/api/auth/me", json={"password": "right-password"}, headers=headers)
+    assert resp.status_code == 204
+
+    # Result image actually removed from storage, not just the DB row.
+    assert storage.get_result_path(job_id) is None
+
+    # Job row gone too (cascade) -- the job is no longer reachable at all.
+    assert client.get(f"/api/try-on/{job_id}").status_code == 404
+
+    # Account itself is gone: can no longer log in, and the old token is now meaningless.
+    login_resp = client.post("/api/auth/login", json={"email": test_email, "password": "right-password"})
+    assert login_resp.status_code == 401
+    assert client.get("/api/auth/me", headers=headers).status_code == 401
+
+    # Re-signing up with the same email must succeed -- proves the row is
+    # truly gone, not just marked deleted (the email column is unique).
+    resignup = signup(client, test_email, password="a-new-password")
+    assert resignup.status_code == 201
 
 
 def test_authenticated_job_can_be_saved_by_its_owner(client, test_email):

@@ -24,6 +24,7 @@ async def lifespan(app: FastAPI):
     # seconds to load from disk, and we want a missing/corrupt weights
     # directory to fail loudly at boot, not on some user's first request.
     storage = LocalStorageService(settings.storage_dir)
+    app.state.storage = storage  # used directly by api/auth.py's account-deletion endpoint
     # Real, persistent job storage (Postgres) — see services/job_store.py for
     # why InMemoryJobStore still exists (it's what the fast test suite uses).
     # Table creation is handled by Alembic migrations (backend/alembic/),
