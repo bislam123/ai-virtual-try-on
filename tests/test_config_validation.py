@@ -1,0 +1,156 @@
+"""Tests for backend/app/config.py's startup secret validation
+(Settings.check_production_secrets).
+
+No database, no network, no app startup needed -- these construct Settings
+directly (bypassing the module-level singleton) and call the check method
+explicitly, mirroring exactly what backend/app/config.py itself does at
+import time (`settings = Settings(); settings.check_production_secrets()`).
+"""
+
+import pytest
+
+from backend.app.config import InsecureProductionConfigError, Settings
+
+_INSECURE_JWT = "dev-only-insecure-secret-change-me"
+_INSECURE_DB_URL = "postgresql+psycopg2://postgres:devpassword@localhost:5432/aitryon"
+_SECURE_JWT = "a-real-random-64-character-secret-value-not-the-dev-default-000000"
+_SECURE_DB_URL = "postgresql+psycopg2://prod_app_user:a-real-strong-password@db.internal:5432/aitryon"
+
+
+# --- Local dev / test-suite behavior is unaffected --------------------------
+
+
+def test_default_environment_is_development():
+    """The module-level singleton (backend.app.config.settings) already
+    proved this by importing successfully at all -- this pins the actual
+    default value so a future change can't silently make "production" the
+    default without a test catching it."""
+    assert Settings().environment == "development"
+
+
+def test_development_environment_with_insecure_defaults_does_not_raise():
+    """Exactly today's local dev / test-suite experience: insecure
+    defaults, no AITRYON_ENVIRONMENT set. Must remain completely
+    unaffected by this feature."""
+    s = Settings(environment="development", jwt_secret_key=_INSECURE_JWT, database_url=_INSECURE_DB_URL)
+    s.check_production_secrets()  # must not raise
+
+
+def test_unset_environment_with_insecure_defaults_does_not_raise():
+    s = Settings(jwt_secret_key=_INSECURE_JWT, database_url=_INSECURE_DB_URL)
+    s.check_production_secrets()  # must not raise
+
+
+# --- Production mode: insecure defaults are rejected -------------------------
+
+
+def test_production_rejects_insecure_jwt_secret():
+    s = Settings(environment="production", jwt_secret_key=_INSECURE_JWT, database_url=_SECURE_DB_URL)
+    with pytest.raises(InsecureProductionConfigError, match="AITRYON_JWT_SECRET_KEY"):
+        s.check_production_secrets()
+
+
+def test_production_rejects_insecure_database_credential():
+    s = Settings(environment="production", jwt_secret_key=_SECURE_JWT, database_url=_INSECURE_DB_URL)
+    with pytest.raises(InsecureProductionConfigError, match="AITRYON_DATABASE_URL"):
+        s.check_production_secrets()
+
+
+def test_production_rejects_insecure_database_credential_even_with_other_host_or_db_name():
+    """The check looks for the insecure credential itself (a substring),
+    not the whole default URL verbatim -- an operator who changes the
+    host/db name but leaves the known-insecure password in place must
+    still be caught."""
+    s = Settings(
+        environment="production",
+        jwt_secret_key=_SECURE_JWT,
+        database_url="postgresql+psycopg2://postgres:devpassword@some-other-host.example.com:5432/different_db_name",
+    )
+    with pytest.raises(InsecureProductionConfigError, match="AITRYON_DATABASE_URL"):
+        s.check_production_secrets()
+
+
+def test_production_reports_both_problems_when_both_are_insecure():
+    s = Settings(environment="production", jwt_secret_key=_INSECURE_JWT, database_url=_INSECURE_DB_URL)
+    with pytest.raises(InsecureProductionConfigError) as exc_info:
+        s.check_production_secrets()
+    message = str(exc_info.value)
+    assert "AITRYON_JWT_SECRET_KEY" in message
+    assert "AITRYON_DATABASE_URL" in message
+
+
+# --- Production mode: secure values are accepted ------------------------------
+
+
+def test_production_accepts_secure_values():
+    s = Settings(environment="production", jwt_secret_key=_SECURE_JWT, database_url=_SECURE_DB_URL)
+    s.check_production_secrets()  # must not raise
+
+
+# --- Error messages never contain the actual secret values -------------------
+
+
+@pytest.mark.parametrize(
+    "jwt_secret_key,database_url",
+    [
+        (_INSECURE_JWT, _SECURE_DB_URL),
+        (_SECURE_JWT, _INSECURE_DB_URL),
+        (_INSECURE_JWT, _INSECURE_DB_URL),
+    ],
+)
+def test_error_message_never_contains_the_secret_values(jwt_secret_key, database_url):
+    s = Settings(environment="production", jwt_secret_key=jwt_secret_key, database_url=database_url)
+    with pytest.raises(InsecureProductionConfigError) as exc_info:
+        s.check_production_secrets()
+    message = str(exc_info.value)
+    assert _INSECURE_JWT not in message
+    assert "devpassword" not in message
+    assert _SECURE_JWT not in message
+    assert "a-real-strong-password" not in message
+
+
+def test_error_message_never_contains_a_custom_secret_value_either():
+    """Not just the two known defaults -- an arbitrary custom secret must
+    never appear either, in case a future caller passes one through."""
+    surprising_secret = "sk_live_totally_made_up_regression_probe_value_123456"
+    s = Settings(environment="production", jwt_secret_key=_INSECURE_JWT, database_url=_SECURE_DB_URL)
+    # jwt_secret_key is still the insecure default here (deliberately, to
+    # trigger the raise) -- database_url is swapped for one containing the
+    # "surprising" secret-looking string, which must not leak either, even
+    # though database_url itself isn't the field that's wrong in this case.
+    s.database_url = f"postgresql+psycopg2://prod:{surprising_secret}@db.internal:5432/aitryon"
+    with pytest.raises(InsecureProductionConfigError) as exc_info:
+        s.check_production_secrets()
+    assert surprising_secret not in str(exc_info.value)
+
+
+def test_real_env_var_pathway_does_not_leak_via_pydantic_error_wrapping(monkeypatch):
+    """Regression test for the actual bug caught while building this
+    feature: raising from inside a pydantic @model_validator produces a
+    ValidationError whose own __str__() includes an `input_value=...`
+    fragment containing the real configured values (confirmed directly
+    during development -- not a hypothetical). check_production_secrets()
+    is a plain method for exactly this reason; this test exercises the
+    real construction pathway (env vars, not direct kwargs) end to end."""
+    monkeypatch.setenv("AITRYON_ENVIRONMENT", "production")
+    monkeypatch.setenv("AITRYON_JWT_SECRET_KEY", _INSECURE_JWT)
+    monkeypatch.setenv("AITRYON_DATABASE_URL", _INSECURE_DB_URL)
+
+    s = Settings()
+    with pytest.raises(InsecureProductionConfigError) as exc_info:
+        s.check_production_secrets()
+    message = str(exc_info.value)
+    assert _INSECURE_JWT not in message
+    assert "devpassword" not in message
+
+
+def test_module_level_settings_singleton_loaded_successfully():
+    """backend.app.config's module-level `settings = Settings();
+    settings.check_production_secrets()` already ran once at import time
+    (by the time this test file itself was collected) -- if it had raised,
+    nothing in this whole test suite would have been able to import
+    anything that depends on backend.app.config. This just makes that
+    implicit proof explicit and named."""
+    from backend.app.config import settings
+
+    assert settings.environment == "development"

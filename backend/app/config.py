@@ -15,9 +15,38 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
+# The exact insecure local-dev defaults documented in docs/ENVIRONMENT.md as
+# "Must be overridden outside local dev" -- these are the only two fields
+# with that documented status; see Settings.check_production_secrets below
+# for why only these two are validated, not every setting.
+_INSECURE_JWT_SECRET_KEY = "dev-only-insecure-secret-change-me"
+_INSECURE_DATABASE_CREDENTIAL_MARKER = "devpassword"
+
+
+class InsecureProductionConfigError(RuntimeError):
+    """Raised when AITRYON_ENVIRONMENT=production but a documented
+    production-required secret is still at its insecure local-dev default.
+
+    Deliberately a plain exception, not raised from inside a pydantic
+    validator: pydantic's own ValidationError.__str__() includes an
+    `input_value=...` fragment containing the *actual configured field
+    values* (verified directly -- a model_validator that raises ValueError
+    produces an error whose string form contains the real secret when one
+    was set via an env var, not just a placeholder). That would leak
+    credentials into any log or traceback capturing this exception. This
+    type's message is always exactly the static text passed to it here --
+    nothing else -- so it is always safe to log.
+    """
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=str(PROJECT_ROOT / ".env"), env_prefix="AITRYON_", extra="ignore")
+
+    # Set AITRYON_ENVIRONMENT=production in a real deployment's environment
+    # to enable the startup secret check below (see check_production_secrets).
+    # Defaults to "development" so local dev (no env vars set) and the test
+    # suite (which never sets this) are completely unaffected.
+    environment: str = "development"
 
     # --- AI model ---
     weights_dir: str = str(PROJECT_ROOT / "ai" / "models" / "fashn-vton-1.5")
@@ -83,5 +112,53 @@ class Settings(BaseSettings):
     # default). Enforced by backend/scripts/cleanup_expired_results.py.
     unsaved_result_ttl_hours: int = 24
 
+    def check_production_secrets(self) -> None:
+        """Call once, right after construction (see the bottom of this
+        module) -- refuses to start (raises before the app can serve a
+        single request) if AITRYON_ENVIRONMENT=production is set but a
+        documented production-required secret is still at its
+        known-insecure local-dev default.
+
+        Scope is deliberately narrow: only jwt_secret_key and database_url,
+        because docs/ENVIRONMENT.md is the single source of truth for which
+        settings are "Must be overridden outside local dev" -- as of this
+        check, only those two carry that documented status. Every other
+        field (rate limits, timesteps, storage paths, CORS origins, TTLs,
+        ...) is an ordinary tunable, not a secret with a known-insecure
+        default, and is intentionally left unvalidated here.
+
+        Local dev and the test suite are unaffected: this entire check is
+        skipped unless environment is explicitly "production", which
+        neither ever sets (default is "development").
+
+        A plain method call, not a pydantic validator -- see
+        InsecureProductionConfigError's docstring for why: pydantic wraps a
+        validator's raised error with metadata that includes the actual
+        configured field values, which would leak credentials into any log
+        or traceback capturing it. This method's own exception never does;
+        its message is always exactly the static text below.
+        """
+        if self.environment != "production":
+            return
+
+        problems = []
+        if self.jwt_secret_key == _INSECURE_JWT_SECRET_KEY:
+            problems.append(
+                "AITRYON_JWT_SECRET_KEY is still the insecure local-dev default. "
+                'Generate a real one with: python -c "import secrets; print(secrets.token_hex(32))"'
+            )
+        if _INSECURE_DATABASE_CREDENTIAL_MARKER in self.database_url:
+            problems.append(
+                "AITRYON_DATABASE_URL still contains the insecure local-dev database credential. "
+                "Set it to your production database's own connection string."
+            )
+
+        if problems:
+            raise InsecureProductionConfigError(
+                "Refusing to start with AITRYON_ENVIRONMENT=production while insecure "
+                "development defaults are still in use:\n" + "\n".join(f"  - {p}" for p in problems)
+            )
+
 
 settings = Settings()
+settings.check_production_secrets()

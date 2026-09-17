@@ -28,6 +28,7 @@ All read by `backend/app/config.py` (`pydantic-settings`, prefix `AITRYON_`), wi
 
 | Variable | Default (dev) | Purpose |
 |---|---|---|
+| `AITRYON_ENVIRONMENT` | `development` | Set to `production` in a real deployment. Enables a startup check (`backend/app/config.py`'s `_refuse_insecure_production_secrets`) that refuses to start if `AITRYON_JWT_SECRET_KEY`/`AITRYON_DATABASE_URL` below are still at their insecure dev defaults. Never set by local dev or the test suite, so neither is affected. |
 | `AITRYON_WEIGHTS_DIR` | `ai/models/fashn-vton-1.5` | Where the AI model weights live |
 | `AITRYON_DEVICE` | `cpu` | `cuda` on a GPU inference host |
 | `AITRYON_DEFAULT_NUM_TIMESTEPS` | `30` | Diffusion steps per generation |
@@ -39,8 +40,8 @@ All read by `backend/app/config.py` (`pydantic-settings`, prefix `AITRYON_`), wi
 | `AITRYON_EXTRACTION_RATE_LIMIT_MAX_REQUESTS` / `AITRYON_EXTRACTION_RATE_LIMIT_WINDOW_SECONDS` | `60` / `600` | Separate, more generous limit for `/api/extract-product-image` — classical CV, not the AI model, so a much cheaper request |
 | `AITRYON_URL_EXTRACTION_RATE_LIMIT_MAX_REQUESTS` / `AITRYON_URL_EXTRACTION_RATE_LIMIT_WINDOW_SECONDS` | `20` / `600` | Tighter limit for `/api/extract-product-url` — it triggers an outbound request to a caller-chosen host, mitigated but not eliminated by `fetchers/ssrf_guard.py` |
 | `AITRYON_CORS_ORIGINS` | `["http://localhost:5173", ...]` | Frontend origins allowed to call the API |
-| `AITRYON_DATABASE_URL` | `postgresql+psycopg2://postgres:devpassword@localhost:5432/aitryon` | **Must be overridden outside local dev.** |
-| `AITRYON_JWT_SECRET_KEY` | `dev-only-insecure-secret-change-me` | **Must be overridden outside local dev.** Signs auth tokens — generate a real one with `python -c "import secrets; print(secrets.token_hex(32))"` |
+| `AITRYON_DATABASE_URL` | `postgresql+psycopg2://postgres:devpassword@localhost:5432/aitryon` | **Must be overridden outside local dev** — enforced at startup when `AITRYON_ENVIRONMENT=production`. |
+| `AITRYON_JWT_SECRET_KEY` | `dev-only-insecure-secret-change-me` | **Must be overridden outside local dev** — enforced at startup when `AITRYON_ENVIRONMENT=production`. Signs auth tokens — generate a real one with `python -c "import secrets; print(secrets.token_hex(32))"` |
 | `AITRYON_JWT_EXPIRE_MINUTES` | `10080` (7 days) | Access token lifetime |
 | `AITRYON_UNSAVED_RESULT_TTL_HOURS` | `24` | How long a result image survives if never explicitly saved to an account (privacy requirement — see AI_MODEL_LICENSE.md's sibling doc, ARCHITECTURE.md's privacy boundary section) |
 | `VITE_API_BASE_URL` (frontend, `.env.local`) | `http://localhost:8000` | Backend URL the frontend calls |
