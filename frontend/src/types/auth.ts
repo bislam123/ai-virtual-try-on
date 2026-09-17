@@ -9,3 +9,7 @@ export interface UserResponse {
   plan: string;
   created_at: string;
 }
+
+export interface MessageResponse {
+  message: string;
+}

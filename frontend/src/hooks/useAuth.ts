@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   ApiError,
   deleteAccount as apiDeleteAccount,
+  forgotPassword as apiForgotPassword,
   getMe,
   login as apiLogin,
   signup as apiSignup,
@@ -76,6 +77,14 @@ export function useAuth() {
     setToken(access_token);
   }, []);
 
+  // Doesn't touch token/user state at all — forgot-password never signs
+  // anyone in or out, it just triggers an email. Left as a thin passthrough
+  // (rather than folded into the component) so callers depend on the same
+  // useAuth() surface as login/signup/logout/deleteAccount.
+  const forgotPassword = useCallback(async (email: string) => {
+    await apiForgotPassword(email);
+  }, []);
+
   const logout = useCallback(() => {
     writeStoredToken(null);
     setToken(null);
@@ -95,7 +104,7 @@ export function useAuth() {
     [token, logout],
   );
 
-  return { token, user, isLoadingUser, login, signup, logout, deleteAccount };
+  return { token, user, isLoadingUser, login, signup, forgotPassword, logout, deleteAccount };
 }
 
 export { ApiError };

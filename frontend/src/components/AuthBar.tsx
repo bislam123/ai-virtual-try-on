@@ -7,11 +7,12 @@ interface AuthBarProps {
   user: UserResponse | null;
   onLogin: (email: string, password: string) => Promise<void>;
   onSignup: (email: string, password: string) => Promise<void>;
+  onForgotPassword: (email: string) => Promise<void>;
   onLogout: () => void;
   onDeleteAccount: (password: string) => Promise<void>;
 }
 
-export default function AuthBar({ user, onLogin, onSignup, onLogout, onDeleteAccount }: AuthBarProps) {
+export default function AuthBar({ user, onLogin, onSignup, onForgotPassword, onLogout, onDeleteAccount }: AuthBarProps) {
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [justDeletedAccount, setJustDeletedAccount] = useState(false);
@@ -54,7 +55,14 @@ export default function AuthBar({ user, onLogin, onSignup, onLogout, onDeleteAcc
         </button>
       )}
 
-      {showAuthModal && <AuthModal onClose={() => setShowAuthModal(false)} onLogin={onLogin} onSignup={onSignup} />}
+      {showAuthModal && (
+        <AuthModal
+          onClose={() => setShowAuthModal(false)}
+          onLogin={onLogin}
+          onSignup={onSignup}
+          onForgotPassword={onForgotPassword}
+        />
+      )}
       {showDeleteModal && (
         <DeleteAccountModal onClose={() => setShowDeleteModal(false)} onConfirm={handleConfirmDelete} />
       )}

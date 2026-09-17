@@ -45,11 +45,15 @@ All read by `backend/app/config.py` (`pydantic-settings`, prefix `AITRYON_`), wi
 | `AITRYON_AUTH_LOGIN_IP_RATE_LIMIT_MAX_REQUESTS` / `_WINDOW_SECONDS` | `10` / `900` | Per-IP limit on `POST /api/auth/login` |
 | `AITRYON_AUTH_LOGIN_ACCOUNT_RATE_LIMIT_MAX_REQUESTS` / `_WINDOW_SECONDS` | `5` / `900` | Per-account (submitted email) limit on `POST /api/auth/login`, in addition to the per-IP one above — see `backend/app/api/auth.py` for why login needs both |
 | `AITRYON_AUTH_SIGNUP_RATE_LIMIT_MAX_REQUESTS` / `_WINDOW_SECONDS` | `5` / `3600` | Per-IP limit on `POST /api/auth/signup` |
+| `AITRYON_AUTH_FORGOT_PASSWORD_IP_RATE_LIMIT_MAX_REQUESTS` / `_WINDOW_SECONDS` | `5` / `3600` | Per-IP limit on `POST /api/auth/forgot-password` |
+| `AITRYON_AUTH_FORGOT_PASSWORD_EMAIL_RATE_LIMIT_MAX_REQUESTS` / `_WINDOW_SECONDS` | `3` / `3600` | Per-submitted-email limit on the same endpoint, in addition to the per-IP one above — caps how many reset emails one address (real or made up) can trigger, protecting a real user's inbox rather than a secret; see `backend/app/api/auth.py` |
 | `AITRYON_CORS_ORIGINS` | `["http://localhost:5173", ...]` | Frontend origins allowed to call the API. **Must not be a wildcard (`"*"`) in production** — enforced at startup when `AITRYON_ENVIRONMENT=production` (`Settings.check_production_cors`). Allowed methods are fixed in code (`main.py`: `GET`, `POST`, `DELETE` — exactly what this API's routes use), not configurable via env var. |
 | `AITRYON_DATABASE_URL` | `postgresql+psycopg2://postgres:devpassword@localhost:5432/aitryon` | **Must be overridden outside local dev** — enforced at startup when `AITRYON_ENVIRONMENT=production`. |
 | `AITRYON_JWT_SECRET_KEY` | `dev-only-insecure-secret-change-me` | **Must be overridden outside local dev** — enforced at startup when `AITRYON_ENVIRONMENT=production`. Signs auth tokens — generate a real one with `python -c "import secrets; print(secrets.token_hex(32))"` |
 | `AITRYON_JWT_EXPIRE_MINUTES` | `10080` (7 days) | Access token lifetime |
 | `AITRYON_UNSAVED_RESULT_TTL_HOURS` | `24` | How long a result image survives if never explicitly saved to an account (privacy requirement — see AI_MODEL_LICENSE.md's sibling doc, ARCHITECTURE.md's privacy boundary section) |
+| `AITRYON_PASSWORD_RESET_TOKEN_EXPIRE_MINUTES` | `30` | How long a `POST /api/auth/forgot-password` reset link stays valid — see `backend/app/services/password_reset_service.py` |
+| `AITRYON_FRONTEND_BASE_URL` | `http://localhost:5173` | Frontend origin a password reset email's link points to. Separate from `AITRYON_CORS_ORIGINS` (a list of origins allowed to *call* the API) — this is the one origin the backend itself builds a user-facing URL against. Not production-secret-checked, same reasoning as `AITRYON_CORS_ORIGINS` staying at its dev default in production: a stale value is a functional misconfiguration (a broken link), not a vulnerability. |
 | `VITE_API_BASE_URL` (frontend, `.env.local`) | `http://localhost:8000` | Backend URL the frontend calls |
 
 No AI API keys exist anywhere in this project, because no paid AI API is ever called — see [AI_MODEL_LICENSE.md](AI_MODEL_LICENSE.md).

@@ -1,19 +1,43 @@
+import { useState } from "react";
 import OfflineBanner from "./components/OfflineBanner";
 import { useAuth } from "./hooks/useAuth";
 import { useOnlineStatus } from "./hooks/useOnlineStatus";
 import { useTryOnFlow } from "./hooks/useTryOnFlow";
 import HomeScreen from "./screens/HomeScreen";
 import ProcessingScreen from "./screens/ProcessingScreen";
+import ResetPasswordScreen from "./screens/ResetPasswordScreen";
 import ResultScreen from "./screens/ResultScreen";
+
+// A password reset email's link points here as `/?reset_token=<token>` (see
+// backend/app/api/auth.py's forgot_password) -- the same query-param
+// handoff pattern HomeScreen already uses for the browser extension (see
+// its initialGarmentSource), not a separate route: this app has no router
+// and no server-side SPA-fallback config for a dedicated path, so a query
+// param on the existing root is the one URL shape guaranteed to work
+// across dev, the PWA service worker, and whatever static hosting this
+// eventually ships behind.
+function readResetToken(): string | null {
+  return new URLSearchParams(window.location.search).get("reset_token");
+}
 
 export default function App() {
   const auth = useAuth();
   const flow = useTryOnFlow();
   const isOnline = useOnlineStatus();
   const { submission } = flow;
+  const [resetToken, setResetToken] = useState<string | null>(() => readResetToken());
+
+  const dismissResetPassword = () => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("reset_token");
+    window.history.replaceState({}, "", url.pathname + url.search);
+    setResetToken(null);
+  };
 
   let screen;
-  if (submission.status === "pending" || submission.status === "processing") {
+  if (resetToken) {
+    screen = <ResetPasswordScreen token={resetToken} onDone={dismissResetPassword} />;
+  } else if (submission.status === "pending" || submission.status === "processing") {
     screen = <ProcessingScreen status={submission.status} />;
   } else if (submission.status === "completed" && flow.personImage) {
     screen = (
@@ -43,6 +67,7 @@ export default function App() {
         authToken={auth.token}
         onLogin={auth.login}
         onSignup={auth.signup}
+        onForgotPassword={auth.forgotPassword}
         onLogout={auth.logout}
         onDeleteAccount={auth.deleteAccount}
       />

@@ -22,9 +22,29 @@ class DeleteAccountRequest(BaseModel):
     password: str
 
 
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(min_length=1, max_length=512)
+    # Same policy as SignupRequest.password above — the app's one existing
+    # password requirement, reused rather than a second, divergent one.
+    new_password: str = Field(min_length=8, max_length=128)
+
+
 class AuthResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class MessageResponse(BaseModel):
+    """Generic {"message": ...} shape for endpoints whose whole point is a
+    constant, non-revealing response — forgot-password (never confirms
+    whether the email is registered) and reset-password (one message for
+    every invalid/expired/already-used token, see api/auth.py)."""
+
+    message: str
 
 
 class UserResponse(BaseModel):

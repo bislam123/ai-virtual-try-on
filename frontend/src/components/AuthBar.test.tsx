@@ -26,13 +26,13 @@ function ControlledAuthBar({ onDeleteAccount }: { onDeleteAccount: (password: st
     setCurrentUser(null);
   };
   return (
-    <AuthBar user={currentUser} onLogin={noop} onSignup={noop} onLogout={vi.fn()} onDeleteAccount={handleDeleteAccount} />
+    <AuthBar user={currentUser} onLogin={noop} onSignup={noop} onForgotPassword={noop} onLogout={vi.fn()} onDeleteAccount={handleDeleteAccount} />
   );
 }
 
 describe("AuthBar — delete account", () => {
   it("hides the delete-account action entirely when signed out", () => {
-    render(<AuthBar user={null} onLogin={noop} onSignup={noop} onLogout={vi.fn()} onDeleteAccount={vi.fn()} />);
+    render(<AuthBar user={null} onLogin={noop} onSignup={noop} onForgotPassword={noop} onLogout={vi.fn()} onDeleteAccount={vi.fn()} />);
 
     expect(screen.getByRole("button", { name: "Sign in" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Delete account" })).not.toBeInTheDocument();
@@ -42,7 +42,7 @@ describe("AuthBar — delete account", () => {
     const onDeleteAccount = vi.fn();
     const user = userEvent.setup();
     render(
-      <AuthBar user={signedInUser} onLogin={noop} onSignup={noop} onLogout={vi.fn()} onDeleteAccount={onDeleteAccount} />,
+      <AuthBar user={signedInUser} onLogin={noop} onSignup={noop} onForgotPassword={noop} onLogout={vi.fn()} onDeleteAccount={onDeleteAccount} />,
     );
 
     await user.click(screen.getByRole("button", { name: "Delete account" }));
@@ -80,7 +80,7 @@ describe("AuthBar — delete account", () => {
     );
     const user = userEvent.setup();
     render(
-      <AuthBar user={signedInUser} onLogin={noop} onSignup={noop} onLogout={vi.fn()} onDeleteAccount={onDeleteAccount} />,
+      <AuthBar user={signedInUser} onLogin={noop} onSignup={noop} onForgotPassword={noop} onLogout={vi.fn()} onDeleteAccount={onDeleteAccount} />,
     );
 
     await user.click(screen.getByRole("button", { name: "Delete account" }));
@@ -102,7 +102,7 @@ describe("AuthBar — delete account", () => {
     const onLogout = vi.fn();
     const user = userEvent.setup();
     render(
-      <AuthBar user={signedInUser} onLogin={noop} onSignup={noop} onLogout={onLogout} onDeleteAccount={onDeleteAccount} />,
+      <AuthBar user={signedInUser} onLogin={noop} onSignup={noop} onForgotPassword={noop} onLogout={onLogout} onDeleteAccount={onDeleteAccount} />,
     );
 
     await user.click(screen.getByRole("button", { name: "Delete account" }));

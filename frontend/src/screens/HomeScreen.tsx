@@ -33,6 +33,7 @@ interface HomeScreenProps {
   authToken: string | null;
   onLogin: (email: string, password: string) => Promise<void>;
   onSignup: (email: string, password: string) => Promise<void>;
+  onForgotPassword: (email: string) => Promise<void>;
   onLogout: () => void;
   onDeleteAccount: (password: string) => Promise<void>;
 }
@@ -51,6 +52,7 @@ export default function HomeScreen({
   authToken,
   onLogin,
   onSignup,
+  onForgotPassword,
   onLogout,
   onDeleteAccount,
 }: HomeScreenProps) {
@@ -113,6 +115,7 @@ export default function HomeScreen({
         user={user}
         onLogin={onLogin}
         onSignup={onSignup}
+        onForgotPassword={onForgotPassword}
         onLogout={onLogout}
         onDeleteAccount={onDeleteAccount}
       />

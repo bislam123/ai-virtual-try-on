@@ -54,6 +54,42 @@ class User(Base):
     # cascade: deleting a user deletes their job records too — no orphaned
     # account-linked rows lingering after an account is removed.
     jobs: Mapped[list["JobRecord"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    # Same reasoning as jobs above — a deleted account leaves no orphaned
+    # reset tokens behind.
+    password_reset_tokens: Mapped[list["PasswordResetToken"]] = relationship(cascade="all, delete-orphan")
+
+
+class PasswordResetToken(Base):
+    """A single-use password reset token (see services/password_reset_service.py
+    and api/auth.py's forgot-password/reset-password endpoints).
+
+    Only a SHA-256 hash of the token is stored, never the raw value — the
+    same hash-not-raw-value convention JobRecord.idempotency_fingerprint
+    already uses above — so a database read alone (backup, leaked dump,
+    admin query) can never be used to reset an account's password; only
+    the raw token the user actually received by email can.
+
+    `used_at` (rather than a boolean flag or deleting the row on use) is
+    what makes single-use enforcement atomic under real concurrent
+    requests: reset_password's UPDATE ... WHERE used_at IS NULL AND
+    expires_at > now() both claims and invalidates the token in one
+    statement, relying on Postgres's own row-level locking rather than an
+    application-level check-then-act — see password_reset_service.py's
+    consume_reset_token docstring for the full reasoning.
+    """
+
+    __tablename__ = "password_reset_tokens"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # DateTime(timezone=True) -- see Plan.created_at's comment above; every
+    # timestamp column added since that migration follows the same
+    # timestamptz convention from the start, never `timestamp without time
+    # zone`.
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
 class JobRecord(Base):

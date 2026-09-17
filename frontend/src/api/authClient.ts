@@ -1,5 +1,5 @@
 import { apiFetch } from "./http";
-import type { AuthResponse, UserResponse } from "../types/auth";
+import type { AuthResponse, MessageResponse, UserResponse } from "../types/auth";
 
 export { ApiError } from "./http";
 
@@ -19,6 +19,27 @@ export async function login(email: string, password: string): Promise<AuthRespon
     body: JSON.stringify({ email, password }),
   });
   return (await response.json()) as AuthResponse;
+}
+
+/** Backend always returns the same generic message whether or not `email`
+ * belongs to a real account — never reveals account existence (see
+ * backend/app/api/auth.py's forgot_password). */
+export async function forgotPassword(email: string): Promise<MessageResponse> {
+  const response = await apiFetch("/api/auth/forgot-password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+  return (await response.json()) as MessageResponse;
+}
+
+export async function resetPassword(token: string, newPassword: string): Promise<MessageResponse> {
+  const response = await apiFetch("/api/auth/reset-password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token, new_password: newPassword }),
+  });
+  return (await response.json()) as MessageResponse;
 }
 
 export async function getMe(token: string): Promise<UserResponse> {

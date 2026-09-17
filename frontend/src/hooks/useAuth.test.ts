@@ -12,6 +12,7 @@ vi.mock("../api/authClient", async () => {
     signup: vi.fn(),
     getMe: vi.fn(),
     deleteAccount: vi.fn(),
+    forgotPassword: vi.fn(),
   };
 });
 
@@ -87,5 +88,43 @@ describe("useAuth().deleteAccount", () => {
 
     await expect(result.current.deleteAccount("whatever")).rejects.toThrow();
     expect(mockedAuthClient.deleteAccount).not.toHaveBeenCalled();
+  });
+});
+
+describe("useAuth().forgotPassword", () => {
+  it("calls the API with the given email and does not touch token/user state", async () => {
+    mockedAuthClient.forgotPassword.mockResolvedValue({ message: "generic message" });
+    const { result } = renderHook(() => useAuth());
+
+    await act(async () => {
+      await result.current.forgotPassword("person@example.com");
+    });
+
+    expect(mockedAuthClient.forgotPassword).toHaveBeenCalledWith("person@example.com");
+    expect(result.current.token).toBeNull();
+    expect(result.current.user).toBeNull();
+  });
+
+  it("works while already signed in, without signing the user out", async () => {
+    const result = await signedInHook();
+    mockedAuthClient.forgotPassword.mockResolvedValue({ message: "generic message" });
+
+    await act(async () => {
+      await result.current.forgotPassword("someone-else@example.com");
+    });
+
+    expect(result.current.token).toBe("tok-1");
+    expect(result.current.user).toEqual(testUser);
+  });
+
+  it("propagates a failure (e.g. rate limited) to the caller", async () => {
+    mockedAuthClient.forgotPassword.mockRejectedValue(
+      new ApiError("Too many attempts. Please try again in about 60 seconds.", 429),
+    );
+    const { result } = renderHook(() => useAuth());
+
+    await act(async () => {
+      await expect(result.current.forgotPassword("person@example.com")).rejects.toThrow("Too many attempts");
+    });
   });
 });

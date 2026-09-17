@@ -10,6 +10,7 @@ from .core.errors import configure_exception_handlers
 from .db import get_session
 from .providers.selfhosted import SelfHostedVTONProvider
 from .services.db_job_store import DbJobStore
+from .services.email_service import ConsoleEmailService
 from .services.job_recovery import recover_stale_processing_jobs
 from .services.quota_service import QuotaService
 from .services.rate_limiter import RateLimiter
@@ -69,6 +70,18 @@ async def lifespan(app: FastAPI):
     app.state.auth_signup_rate_limiter = RateLimiter(
         settings.auth_signup_rate_limit_max_requests, settings.auth_signup_rate_limit_window_seconds
     )
+    app.state.auth_forgot_password_ip_rate_limiter = RateLimiter(
+        settings.auth_forgot_password_ip_rate_limit_max_requests,
+        settings.auth_forgot_password_ip_rate_limit_window_seconds,
+    )
+    app.state.auth_forgot_password_email_rate_limiter = RateLimiter(
+        settings.auth_forgot_password_email_rate_limit_max_requests,
+        settings.auth_forgot_password_email_rate_limit_window_seconds,
+    )
+    # See services/email_service.py's module docstring for why this is a
+    # console/dev stand-in, not a real send, and what a production
+    # deployment needs to swap in instead.
+    app.state.email_service = ConsoleEmailService()
     app.state.quota_service = QuotaService()
     logger.info("AI Try-On backend ready.")
     yield

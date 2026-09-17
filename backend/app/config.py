@@ -135,6 +135,19 @@ class Settings(BaseSettings):
     # user signs up once, ever, from a given IP.
     auth_signup_rate_limit_max_requests: int = 5
     auth_signup_rate_limit_window_seconds: int = 3600
+    # Forgot-password gets its own dual-key strategy, same shape as login's
+    # above but tuned for a different abuse profile: the per-IP limit
+    # catches one source enumerating many target emails, and the
+    # per-email limit caps how many reset emails a single (real or
+    # made-up) address can trigger — protecting a real user's inbox from
+    # being bombed, not protecting a secret. Since the endpoint's response
+    # never reveals whether the email is registered (see api/auth.py), an
+    # attacker keying the email-scoped limiter with a fake address only
+    # ever exhausts that fake address's own separate budget.
+    auth_forgot_password_ip_rate_limit_max_requests: int = 5
+    auth_forgot_password_ip_rate_limit_window_seconds: int = 3600
+    auth_forgot_password_email_rate_limit_max_requests: int = 3
+    auth_forgot_password_email_rate_limit_window_seconds: int = 3600
 
     # --- CORS (frontend origins allowed to call this API) ---
     cors_origins: List[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
@@ -157,6 +170,24 @@ class Settings(BaseSettings):
     # explicitly saves it to their account (privacy requirement: temporary by
     # default). Enforced by backend/scripts/cleanup_expired_results.py.
     unsaved_result_ttl_hours: int = 24
+
+    # How long a password reset link is valid for — short on purpose (a
+    # reset link is effectively a bearer credential for taking over the
+    # account while it's live). See services/password_reset_service.py.
+    password_reset_token_expire_minutes: int = 30
+
+    # The frontend origin a password reset email's link points to (e.g.
+    # "https://app.example.com" -> ".../?reset_token=..."). Deliberately
+    # separate from cors_origins (a *list* of origins allowed to call this
+    # API) -- this is the single origin the backend itself constructs a
+    # user-facing URL against, and there's no reason those need to be the
+    # same setting even though they'll typically share a value. Not
+    # validated by check_production_secrets/check_production_cors below:
+    # leaving it at the localhost dev default in production is a
+    # functional misconfiguration (emailed links point at the wrong
+    # place), not a vulnerability -- same reasoning check_production_cors
+    # already documents for cors_origins itself.
+    frontend_base_url: str = "http://localhost:5173"
 
     def check_production_secrets(self) -> None:
         """Call once, right after construction (see the bottom of this

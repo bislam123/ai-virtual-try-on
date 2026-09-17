@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Periodic maintenance sweep: two independent jobs, run together for a
+"""Periodic maintenance sweep: three independent jobs, run together for a
 single scheduler integration point (see below).
 
 1. Deletes result images (and any leftover temp files) for completed,
@@ -14,6 +14,11 @@ after a real restart; running it here too covers the case where the
 process keeps running but a single job's generation genuinely hung (see
 providers/selfhosted.py's own timeout, which is the faster, in-process
 path for that specific case — this sweep is the slower backstop).
+
+3. Deletes password reset tokens that are expired or already used — see
+services/password_reset_service.py's cleanup_expired_password_reset_tokens.
+Purely tidying (consume_reset_token already refuses either kind on its
+own), so this can safely run on the same loose schedule as the other two.
 
 Idempotent by design, safe to run on any schedule, including overlapping or
 repeated runs:
@@ -81,6 +86,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from backend.app.config import settings  # noqa: E402
 from backend.app.db import JobRecord, get_session  # noqa: E402
 from backend.app.services.job_recovery import recover_stale_processing_jobs  # noqa: E402
+from backend.app.services.password_reset_service import cleanup_expired_password_reset_tokens  # noqa: E402
 from backend.app.services.storage import LocalStorageService, StorageService  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s - %(levelname)s - %(message)s")
@@ -140,6 +146,8 @@ def main() -> int:
         recovery_result = recover_stale_processing_jobs(session, storage, settings.stale_job_threshold_minutes)
     if recovery_result.recovered:
         logger.warning("Recovered %d stale processing job(s).", recovery_result.recovered)
+    with get_session() as session:
+        cleanup_expired_password_reset_tokens(session)
     return 1 if result.failed else 0
 
 
