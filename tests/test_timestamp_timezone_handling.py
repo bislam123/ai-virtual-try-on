@@ -123,7 +123,7 @@ def test_stored_instant_is_identical_regardless_of_reading_sessions_timezone(job
         session.flush()
         job_id = job.id
 
-    with _session_with_timezone("Asia/Calcutta") as session:
+    with _session_with_timezone("Asia/Kolkata") as session:
         row_ist = session.get(JobRecord, job_id)
         read_ist = row_ist.updated_at
 

@@ -32,6 +32,20 @@ backend/storage/tmp/*
 !docs/**/*.png
 !extension/icons/**
 
+# Small, already-approved FASHN VTON v1.5 example fixtures (Apache-2.0, same
+# vendored repo already committed in full under ai/vendor/fashn-vton-1.5) --
+# this project's own tests use them as real test-image input. The vendored
+# repo's own .gitignore (ai/vendor/fashn-vton-1.5/.gitignore, left untouched
+# on purpose so the vendored copy stays byte-for-byte as-vendored) has a
+# blanket `*.webp` rule that would otherwise swallow these two small
+# (~34KB/~136KB) fixtures along with real image outputs -- not a deliberate
+# exclusion of these specific files, just an inherited side effect. Note this
+# negation alone isn't sufficient (a more specific/deeper .gitignore's plain
+# ignore pattern wins over a shallower negation -- verified directly with
+# `git check-ignore -v`); the two files are additionally force-added
+# (`git add -f`) once, and stay tracked from then on regardless.
+!ai/vendor/fashn-vton-1.5/examples/data/*.webp
+
 # Test artifacts
 .pytest_cache/
 

@@ -1,19 +1,25 @@
 # CI only -- tests, build, lint, migration-drift check. No deploy step
 # anywhere in this file, deliberately (see docs/DEPLOYMENT.md; this
-# milestone's own scope explicitly excludes deploying). Not verified by
-# an actual GitHub Actions run in the environment that wrote this (no gh
-# CLI / GitHub access available there) -- reviewed carefully against this
-# repo's own documented install sequence and existing test conventions,
-# but an operator should watch the first real run before trusting it.
+# milestone's own scope explicitly excludes deploying).
 #
-# Backend AI-pipeline packages (torch, onnxruntime, mediapipe, opencv)
-# are installed here (same packages every backend test run already needs
-# at import time) but the ~2.3GB model weights are NOT downloaded --
-# every test that would otherwise need a real model injects a fake
-# provider instead (see backend/app/providers/base.py's test-only
-# injection point, used throughout tests/test_selfhosted_provider.py and
-# friends) -- confirmed by inspection, not assumed, before leaving weight
-# download out of this workflow.
+# Backend AI-pipeline packages (torch, onnxruntime, mediapipe, opencv) are
+# installed here (same packages every backend test run already needs at
+# import time). The ~1.94GB TryOn diffusion model weights (model.safetensors)
+# are deliberately NOT downloaded -- every test that would otherwise need a
+# full TryOnPipeline injects a fake provider instead (see
+# backend/app/providers/base.py's test-only injection point, used throughout
+# tests/test_selfhosted_provider.py and friends). DWPose (~330MB) and
+# MediaPipe (~16MB) weights ARE downloaded (see the step below): a real,
+# first GitHub Actions run against this workflow found several test files
+# (tests/test_dwpose_provider_selection.py, tests/test_mediapipe_body_parser.py,
+# tests/test_clothing_agnostic_mask.py) that construct the real Wholebody/
+# MediaPipeBodyParser classes directly, by design -- see each file's own
+# docstring for why those specific tests are deliberately real-model, not
+# mocked. The two small FASHN example images those same tests (plus
+# tests/test_extraction_api.py, tests/test_product_extractor.py) read are
+# committed directly (ai/vendor/fashn-vton-1.5/examples/data/*.webp, see
+# .gitignore) rather than downloaded -- small (~34-136KB), already-approved,
+# already-vendored-in-full fixtures, not model weights.
 
 name: CI
 
@@ -77,6 +83,9 @@ jobs:
           pip install -e product-extractor
           pip install -r backend/requirements.txt
           pip install pytest httpx
+
+      - name: Download DWPose + MediaPipe weights (Apache-2.0 -- skips the ~1.94GB TryOn diffusion model, which no test in this suite needs)
+        run: python ai/inference/download_weights.py --weights-dir ai/models/fashn-vton-1.5 --dwpose-only --mediapipe
 
       - name: Run database migrations
         working-directory: backend
