@@ -28,7 +28,7 @@ All read by `backend/app/config.py` (`pydantic-settings`, prefix `AITRYON_`), wi
 
 | Variable | Default (dev) | Purpose |
 |---|---|---|
-| `AITRYON_ENVIRONMENT` | `development` | Set to `production` in a real deployment. Enables a startup check (`backend/app/config.py`'s `_refuse_insecure_production_secrets`) that refuses to start if `AITRYON_JWT_SECRET_KEY`/`AITRYON_DATABASE_URL` below are still at their insecure dev defaults. Never set by local dev or the test suite, so neither is affected. |
+| `AITRYON_ENVIRONMENT` | `development` | Set to `production` in a real deployment. Enables a startup check (`backend/app/config.py`'s `Settings.check_production_secrets`) that refuses to start if `AITRYON_JWT_SECRET_KEY`/`AITRYON_DATABASE_URL` below are still at their insecure dev defaults. Never set by local dev or the test suite, so neither is affected. |
 | `AITRYON_WEIGHTS_DIR` | `ai/models/fashn-vton-1.5` | Where the AI model weights live |
 | `AITRYON_DEVICE` | `cpu` | `cuda` on a GPU inference host |
 | `AITRYON_DEFAULT_NUM_TIMESTEPS` | `30` | Diffusion steps per generation |

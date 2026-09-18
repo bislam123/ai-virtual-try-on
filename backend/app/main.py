@@ -3,6 +3,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 from .api import auth, extraction, tryon, usage
 from .config import settings
@@ -89,6 +92,16 @@ async def lifespan(app: FastAPI):
     app.state.capacity_service = CapacityService()
     logger.info("AI Try-On backend ready.")
     yield
+    # No forceful cleanup needed on the way out: a try-on job left
+    # PROCESSING by an abrupt shutdown (a SIGTERM grace period expiring
+    # mid-generation, or a hard kill) self-heals -- the next startup's
+    # recover_stale_processing_jobs() above, or scripts/cleanup_expired_results.py's
+    # scheduled sweep, picks it up (see services/job_recovery.py). Nothing
+    # here could safely wait for an in-flight generation anyway; see
+    # providers/selfhosted.py's own module docstring for why a genuine
+    # in-progress generation can't be force-stopped. This log line exists
+    # so a graceful shutdown is visible in the logs, not silent.
+    logger.info("AI Try-On backend shutting down.")
 
 
 app = FastAPI(title="AI Try-On API", lifespan=lifespan)
@@ -142,6 +155,23 @@ configure_exception_handlers(app)
 
 @app.get("/health")
 async def health():
+    """Liveness *and* readiness in one endpoint -- deliberately not split
+    into two routes: this app has no orchestrator (Kubernetes, etc.) yet
+    that would actually consume them differently, so one honest check is
+    simpler than two that would answer identically today. Verifies the
+    database is actually reachable (a real `SELECT 1`, not just "the
+    process is running") -- the AI model and storage directory don't need
+    an equivalent per-request check here: both already fail loudly at
+    startup (see lifespan() above and services/storage.py's
+    LocalStorageService.__init__), so if this endpoint is answering at
+    all, both are already known-good for this process's lifetime.
+    """
+    try:
+        with get_session() as session:
+            session.execute(text("SELECT 1"))
+    except OperationalError:
+        logger.exception("Health check failed: database unreachable.")
+        return JSONResponse(status_code=503, content={"status": "error", "detail": "Database unreachable."})
     return {"status": "ok"}
 
 
