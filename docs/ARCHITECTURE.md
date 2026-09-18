@@ -67,6 +67,54 @@ What an account actually unlocks today: a job submitted while signed in is attri
 
 **Server-side JWT revocation** (2026-09-17, closes this doc's previous "JWT stays valid after a password reset" gap): a lightweight per-user version counter, not a token blocklist or session table. `users.auth_version` (integer, starts at 1) is embedded in every access token as its `"ver"` claim (`auth/security.py`'s `create_access_token`); `get_current_user_optional` rejects a token whose `ver` doesn't match the live row's current `auth_version` — one integer comparison against data a request already loads to authenticate at all, no extra query or table. Bumping the column (`reset_password`, on every successful reset) therefore revokes *every* previously issued token for that account in one write. A token missing the `"ver"` claim entirely (the shape of every token issued before this feature existed) is rejected outright, fail-closed, by `decode_access_token` itself — not treated as automatically valid. Account deletion needs no separate revocation step: the user row is gone, so `get_current_user_optional`'s existing `user is None` check already covers it. Frontend: `api/http.ts`'s `apiFetch` calls a registered session-expired listener whenever a token-bearing request comes back `401`, and `useAuth.ts` uses it to clear stored/in-memory session state globally the moment any request surfaces a revoked token — not just on the next explicit `/me` check. Account-deletion's wrong-confirmation-password response was changed from `401` to `403` specifically so it's never mistaken for a revoked session by that same mechanism (the bearer token there is still perfectly valid; only the destructive-action confirmation failed). **Known, accepted limitation**: no way to revoke a single token/device without revoking all of a user's sessions at once (there's only one counter per user, not per token) — acceptable given this app has no concept of multiple concurrent named sessions/devices to begin with.
 
+## Admin / Operations (2026-09-19)
+
+A minimal, server-authoritative admin area for operating the application safely before real deployment — not a new subsystem: it's a read-mostly view over the existing `User`/`Plan`/`JobRecord` tables, plus one write action (enable/disable an account), all behind one new authorization gate.
+
+```
+users.is_admin (bool, default false) ──▶ get_current_admin_user (composes on get_current_user_required)
+                                                   │
+                                                   ▼
+                                        /api/admin/* (7 routes, one router-level dependency)
+                                                   │
+                                                   ▼
+                                        AdminService (plain SQLAlchemy queries, same
+                                        shape as QuotaService/CapacityService)
+```
+
+**Authorization model**: `users.is_admin` and `users.is_active` (migration `e94aa22bee59`) — two booleans, not a roles table or a separate admin-users table, because this app has exactly one privilege tier above "normal user" today. `auth/dependencies.py`'s `get_current_admin_user` composes on the existing `get_current_user_required` (so an unauthenticated request gets the exact same 401 every other protected endpoint gives) and adds one check: 403 if the authenticated user's `is_admin` is false. Applied once, at the `/api/admin` router level (`dependencies=[Depends(get_current_admin_user)]`) — no individual route re-checks `is_admin` itself, the same "one shared gate, not reimplemented per-route" pattern the job-ownership model already established (`TryOnService.get_job_for_viewer`/`cancel_job`/`save_job`). `is_admin` is never accepted from any request body — no signup/login schema has such a field — so there is no API path that can ever grant it.
+
+**`is_active`**: lets an admin disable an account without deleting it. Checked in `get_current_user_optional` alongside the existing `auth_version` comparison, so disabling revokes a live session immediately (not just future logins) — the same fail-closed pattern, not a second mechanism. `login()` rejects a disabled account with the exact same generic "Incorrect email or password." message a wrong password gets, so account status is never a new enumeration channel. An admin cannot disable their own account (a guarded 400, avoiding a self-lockout that would need direct DB access to undo).
+
+**First-admin bootstrap — deliberately out-of-band, not an API call**: an account becomes admin only via a direct database write, by whoever already has database access — the exact same trust boundary this project already relies on for editing `plans` rows by hand (see Milestone 11 below). Two ways to do it, both requiring the target account to have already signed up normally:
+
+```powershell
+# Convenience script (backend/scripts/promote_admin.py):
+ai\.venv\Scripts\python.exe backend\scripts\promote_admin.py you@example.com
+
+# Or the raw SQL it wraps:
+UPDATE users SET is_admin = true WHERE email = 'you@example.com';
+```
+
+No default admin account is created by the migration, the script, or anything else — every row starts `is_admin=false`, with no exception. There is deliberately no setup-wizard endpoint, no environment-variable-configured admin email, and no first-user-is-admin special case (all of which would be exactly the kind of implicit backdoor this milestone was told to avoid).
+
+**API surface** (`backend/app/api/admin.py`, all under `/api/admin`, all admin-gated):
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /users` | Paginated list, optional `?search=` (email substring) |
+| `GET /users/{id}` | Full detail including usage/quota (reuses `QuotaService.get_status` — the exact same call `GET /api/usage/me` makes for a user's own account, not reimplemented) |
+| `POST /users/{id}/disable` / `/enable` | Toggles `is_active`; self-disable refused |
+| `GET /plans` | Read-only list of configured plans and their limits — no payment/billing logic |
+| `GET /jobs` | Paginated, optional `?status=`/`?user_id=` filters, across *every* user — the one intentional exception to normal job-ownership scoping, gated by the same admin check everything else here uses |
+| `GET /dashboard` | `total_users`, `active_users`, `jobs_by_status`, `recent_failed_jobs`, `active_job_count`/`max_active_job_capacity` (reuses `CapacityService`'s own configured limit), and `avg_processing_duration_seconds` computed from a bounded recent sample of completed jobs' own `created_at`/`updated_at` — no new timing instrumentation added anywhere in the inference path |
+
+**What every admin response deliberately excludes**: `password_hash`, `auth_version`, reset-token hashes, JWTs, and (on the job list specifically) the associated user's email — jobs carry only `user_id`, cross-referenced via the user endpoints if needed, not re-embedded. Regression-tested directly (`tests/test_admin_api.py::test_no_sensitive_auth_fields_in_any_admin_response`), not just reasoned about.
+
+**Frontend**: `AdminScreen.tsx`, reachable only via an "Admin" button in `AuthBar` that itself only renders when `user.is_admin` is true (read from `GET /api/auth/me`, display-only — every admin API call the screen makes is independently re-authorized server-side regardless of what the client believes, so a stale or spoofed client-side flag can't grant anything real). No router exists in this app (same as the password-reset/extension-handoff screens); `AdminScreen` is a local `App.tsx` state branch, the established pattern here.
+
+**Deliberately not built**: no audit log of admin actions (two actions exist — disable/enable — and both are already visible as the account's own `is_active` state; a dedicated log was judged unnecessary infrastructure for this milestone's scope). No bulk actions, no plan-editing UI (plans stay a direct-DB-edit operation, unchanged from Milestone 11), no payment/billing surface anywhere in this feature.
+
 ## Product extraction (Milestone 7)
 
 ```

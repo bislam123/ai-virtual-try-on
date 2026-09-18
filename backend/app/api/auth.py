@@ -144,8 +144,13 @@ async def login(
 
     with get_session() as session:
         user = session.query(User).filter(User.email == body.email.lower()).first()
-        if user is None or not verify_password(body.password, user.password_hash):
-            # Same message either way — never reveal whether the email is registered.
+        # Same message and status for every rejection reason -- wrong
+        # email, wrong password, or a disabled account (Admin/Operations
+        # milestone) -- never reveal which one applies, same doctrine as
+        # forgot_password's own generic response below. A disabled
+        # account must be indistinguishable from a wrong password here;
+        # anything else would let a caller probe account status.
+        if user is None or not verify_password(body.password, user.password_hash) or not user.is_active:
             raise UserFacingError(GENERIC_LOGIN_ERROR, status_code=401)
         token = create_access_token(user.id, user.auth_version)
     return AuthResponse(access_token=token)
@@ -219,7 +224,12 @@ async def reset_password(body: ResetPasswordRequest):
 
 @router.get("/me", response_model=UserResponse)
 async def me(user: User = Depends(get_current_user_required)):
-    return UserResponse(id=user.id, email=user.email, plan=user.plan, created_at=user.created_at)
+    # is_admin here is display-only, read fresh from this user's own row --
+    # never trusted for authorization anywhere. The frontend uses it only
+    # to decide whether to show an "Admin" nav entry (get_current_admin_user
+    # independently re-checks the real row on every actual admin request,
+    # regardless of what a client claims).
+    return UserResponse(id=user.id, email=user.email, plan=user.plan, created_at=user.created_at, is_admin=user.is_admin)
 
 
 @router.delete("/me", status_code=204)

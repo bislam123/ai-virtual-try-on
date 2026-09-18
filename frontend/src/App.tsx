@@ -5,6 +5,7 @@ import { useAuth } from "./hooks/useAuth";
 import { useOnlineStatus } from "./hooks/useOnlineStatus";
 import { usePwaUpdate } from "./hooks/usePwaUpdate";
 import { useTryOnFlow } from "./hooks/useTryOnFlow";
+import AdminScreen from "./screens/AdminScreen";
 import HomeScreen from "./screens/HomeScreen";
 import ProcessingScreen from "./screens/ProcessingScreen";
 import ResetPasswordScreen from "./screens/ResetPasswordScreen";
@@ -29,6 +30,7 @@ export default function App() {
   const pwaUpdate = usePwaUpdate();
   const { submission } = flow;
   const [resetToken, setResetToken] = useState<string | null>(() => readResetToken());
+  const [showAdmin, setShowAdmin] = useState(false);
 
   const dismissResetPassword = () => {
     const url = new URL(window.location.href);
@@ -40,6 +42,13 @@ export default function App() {
   let screen;
   if (resetToken) {
     screen = <ResetPasswordScreen token={resetToken} onDone={dismissResetPassword} />;
+  } else if (showAdmin && auth.user?.is_admin && auth.token) {
+    // Frontend gate is convenience navigation only, not the security
+    // boundary -- every /api/admin/* call this screen makes is
+    // independently re-authorized server-side (get_current_admin_user).
+    // Checked here anyway so a stale showAdmin=true (e.g. after logout)
+    // can never render a screen that would just fail its own requests.
+    screen = <AdminScreen authToken={auth.token} onClose={() => setShowAdmin(false)} />;
   } else if (submission.status === "pending" || submission.status === "processing") {
     screen = <ProcessingScreen status={submission.status} onCancel={() => void flow.cancel(auth.token)} />;
   } else if (submission.status === "completed" && flow.personImage) {
@@ -73,6 +82,7 @@ export default function App() {
         onForgotPassword={auth.forgotPassword}
         onLogout={auth.logout}
         onDeleteAccount={auth.deleteAccount}
+        onOpenAdmin={auth.user?.is_admin ? () => setShowAdmin(true) : undefined}
       />
     );
   }

@@ -10,9 +10,23 @@ interface AuthBarProps {
   onForgotPassword: (email: string) => Promise<void>;
   onLogout: () => void;
   onDeleteAccount: (password: string) => Promise<void>;
+  // Optional: HomeScreen/App.tsx only pass this through when there's
+  // somewhere for it to go. Backend authorization is what actually gates
+  // the admin area (get_current_admin_user, re-checked on every admin
+  // request) -- this button is convenience navigation, not a security
+  // boundary, and is itself only ever shown when user.is_admin is true.
+  onOpenAdmin?: () => void;
 }
 
-export default function AuthBar({ user, onLogin, onSignup, onForgotPassword, onLogout, onDeleteAccount }: AuthBarProps) {
+export default function AuthBar({
+  user,
+  onLogin,
+  onSignup,
+  onForgotPassword,
+  onLogout,
+  onDeleteAccount,
+  onOpenAdmin,
+}: AuthBarProps) {
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [justDeletedAccount, setJustDeletedAccount] = useState(false);
@@ -28,6 +42,15 @@ export default function AuthBar({ user, onLogin, onSignup, onForgotPassword, onL
       {user ? (
         <div className="flex items-center gap-3 text-slate-500">
           <span className="truncate max-w-[160px]">{user.email}</span>
+          {user.is_admin && onOpenAdmin && (
+            <button
+              type="button"
+              onClick={onOpenAdmin}
+              className="flex min-h-11 items-center font-semibold text-indigo-600"
+            >
+              Admin
+            </button>
+          )}
           <button
             type="button"
             onClick={onLogout}

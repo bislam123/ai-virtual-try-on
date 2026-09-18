@@ -35,6 +35,14 @@ def get_current_user_optional(
         # entirely, so `user is None` above already covers it.
         if user.auth_version != claims.auth_version:
             return None
+        # Admin/Operations milestone: a disabled account's existing tokens
+        # stop working immediately, on this exact next request, the same
+        # way a revoked auth_version does above -- not just future logins
+        # (see api/auth.py's login). Fails closed like every other branch
+        # here: never distinguishes "disabled" from "invalid token" to the
+        # caller, same treatment as a deleted/nonexistent user.
+        if not user.is_active:
+            return None
         session.expunge(user)
         return user
 
@@ -42,4 +50,22 @@ def get_current_user_optional(
 def get_current_user_required(user: Optional[User] = Depends(get_current_user_optional)) -> User:
     if user is None:
         raise HTTPException(status_code=401, detail="Please sign in to use this feature.")
+    return user
+
+
+def get_current_admin_user(user: User = Depends(get_current_user_required)) -> User:
+    """Admin/Operations milestone: gates every /api/admin/* route.
+
+    Composes on top of get_current_user_required, not a separate check --
+    an unauthenticated request gets the exact same 401 every other
+    protected endpoint already gives ("please sign in"), never a
+    different, admin-specific unauthenticated response that could hint
+    this route is special. Only an authenticated non-admin gets 403,
+    matching the milestone brief exactly. is_admin is read from the same
+    already-loaded User row every other check here uses -- never accepted
+    from the request itself (no such field exists on any request schema),
+    so nothing client-supplied can ever satisfy this.
+    """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required.")
     return user

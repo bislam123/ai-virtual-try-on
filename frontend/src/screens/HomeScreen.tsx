@@ -36,6 +36,7 @@ interface HomeScreenProps {
   onForgotPassword: (email: string) => Promise<void>;
   onLogout: () => void;
   onDeleteAccount: (password: string) => Promise<void>;
+  onOpenAdmin?: () => void;
 }
 
 export default function HomeScreen({
@@ -55,6 +56,7 @@ export default function HomeScreen({
   onForgotPassword,
   onLogout,
   onDeleteAccount,
+  onOpenAdmin,
 }: HomeScreenProps) {
   const canSubmit = personImage !== null && garmentImage !== null;
   const [extractionState, setExtractionState] = useState<ExtractionState>({ status: "idle" });
@@ -118,6 +120,7 @@ export default function HomeScreen({
         onForgotPassword={onForgotPassword}
         onLogout={onLogout}
         onDeleteAccount={onDeleteAccount}
+        onOpenAdmin={onOpenAdmin}
       />
 
       <header className="text-center">

@@ -11,6 +11,7 @@ const signedInUser: UserResponse = {
   email: "signed-in@example.com",
   plan: "free",
   created_at: "2026-01-01T00:00:00Z",
+  is_admin: false,
 };
 
 const noop = async () => {};
@@ -117,5 +118,60 @@ describe("AuthBar — delete account", () => {
     expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
     expect(screen.getByPlaceholderText("Current password")).toBeInTheDocument();
     expect(onLogout).not.toHaveBeenCalled();
+  });
+});
+
+describe("AuthBar — admin navigation", () => {
+  it("shows no Admin entry for a normal (non-admin) signed-in user, even when onOpenAdmin is provided", () => {
+    render(
+      <AuthBar
+        user={signedInUser}
+        onLogin={noop}
+        onSignup={noop}
+        onForgotPassword={noop}
+        onLogout={vi.fn()}
+        onDeleteAccount={vi.fn()}
+        onOpenAdmin={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Admin" })).not.toBeInTheDocument();
+  });
+
+  it("shows no Admin entry when signed out, regardless of onOpenAdmin", () => {
+    render(
+      <AuthBar user={null} onLogin={noop} onSignup={noop} onForgotPassword={noop} onLogout={vi.fn()} onDeleteAccount={vi.fn()} onOpenAdmin={vi.fn()} />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Admin" })).not.toBeInTheDocument();
+  });
+
+  it("shows an Admin entry for an admin user, and calls onOpenAdmin when clicked", async () => {
+    const adminUser: UserResponse = { ...signedInUser, is_admin: true };
+    const onOpenAdmin = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <AuthBar
+        user={adminUser}
+        onLogin={noop}
+        onSignup={noop}
+        onForgotPassword={noop}
+        onLogout={vi.fn()}
+        onDeleteAccount={vi.fn()}
+        onOpenAdmin={onOpenAdmin}
+      />,
+    );
+
+    const adminButton = screen.getByRole("button", { name: "Admin" });
+    await user.click(adminButton);
+
+    expect(onOpenAdmin).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides the Admin entry for an admin user when no onOpenAdmin handler is given (nowhere for it to navigate)", () => {
+    const adminUser: UserResponse = { ...signedInUser, is_admin: true };
+    render(<AuthBar user={adminUser} onLogin={noop} onSignup={noop} onForgotPassword={noop} onLogout={vi.fn()} onDeleteAccount={vi.fn()} />);
+
+    expect(screen.queryByRole("button", { name: "Admin" })).not.toBeInTheDocument();
   });
 });

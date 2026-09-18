@@ -7,13 +7,14 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
-from .api import auth, extraction, tryon, usage
+from .api import admin, auth, extraction, tryon, usage
 from .config import settings
 from .core.body_size_limit import RequestBodySizeLimitMiddleware
 from .core.errors import CatchUnhandledExceptionsMiddleware, configure_exception_handlers
 from .core.security_headers import SecurityHeadersMiddleware
 from .db import get_session
 from .providers.selfhosted import SelfHostedVTONProvider
+from .services.admin_service import AdminService
 from .services.capacity_service import CapacityService
 from .services.db_job_store import DbJobStore
 from .services.email_service import ConsoleEmailService
@@ -90,6 +91,7 @@ async def lifespan(app: FastAPI):
     app.state.email_service = ConsoleEmailService()
     app.state.quota_service = QuotaService()
     app.state.capacity_service = CapacityService()
+    app.state.admin_service = AdminService()
     logger.info("AI Try-On backend ready.")
     yield
     # No forceful cleanup needed on the way out: a try-on job left
@@ -179,3 +181,4 @@ app.include_router(tryon.router)
 app.include_router(auth.router)
 app.include_router(extraction.router)
 app.include_router(usage.router)
+app.include_router(admin.router)

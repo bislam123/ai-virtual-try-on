@@ -63,6 +63,18 @@ class User(Base):
     # missing claim is rejected outright anyway, making this belt-and-braces
     # rather than load-bearing on its own.
     auth_version: Mapped[int] = mapped_column(nullable=False, default=1)
+    # Admin/Operations milestone: gates every /api/admin/* route (see
+    # auth/dependencies.py's get_current_admin_user). Never settable from
+    # signup/login — SignupRequest has no such field. The only way an
+    # account becomes admin is a direct database UPDATE by an operator who
+    # already has DB access; see backend/scripts/promote_admin.py and
+    # docs/ARCHITECTURE.md's Admin/Operations section for the documented
+    # bootstrap procedure. Defaults false for every row, no exception.
+    is_admin: Mapped[bool] = mapped_column(nullable=False, default=False)
+    # Lets an admin disable an account without deleting it. Checked
+    # alongside auth_version in get_current_user_optional, so disabling
+    # revokes live sessions immediately, not just future logins.
+    is_active: Mapped[bool] = mapped_column(nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     # cascade: deleting a user deletes their job records too — no orphaned
