@@ -85,7 +85,7 @@ Uses fashn-vton-1.5's own bundled example images (a person photo + a garment pho
 
 ## Known limitation carried forward from Milestone 2
 
-`aitryon_bodyparser.PlaceholderBodyParser` always returns "background" — it is not a real segmentation model. It's provably safe only when the pipeline runs with `segmentation_free=True` and `garment_photo_type="flat-lay"` (our actual MVP scenario: a person photo + a plain clothing/product photo). The backend API enforces this — see Milestone 3 below. Before we support masked mode or "garment worn by another person" product photos, it must be replaced with a real commercially-licensed segmentation model. Candidates and why: see [AI_MODEL_LICENSE.md](AI_MODEL_LICENSE.md).
+~~`aitryon_bodyparser.PlaceholderBodyParser` always returns "background" — it is not a real segmentation model. It's provably safe only when the pipeline runs with `segmentation_free=True` and `garment_photo_type="flat-lay"` (our actual MVP scenario: a person photo + a plain clothing/product photo). The backend API enforces this — see Milestone 3 below. Before we support masked mode or "garment worn by another person" product photos, it must be replaced with a real commercially-licensed segmentation model.~~ → **Closed, 2026-09-16** (commits `19aeec3`, `5b74a58`; this note corrected 2026-09-19 after it was found stale in a documentation-hygiene audit). `PlaceholderBodyParser` was replaced by `MediaPipeBodyParser`, and the pipeline now runs with `segmentation_free=False` for every request — real masking is active, not just computed-and-discarded. `garment_photo_type="model"` (a garment already worn by another person in the source photo) is also now accepted, using the same masking approach on the garment image. Full detail, including the honestly-stated gap in model-worn output quality validation: see [AI_MODEL_LICENSE.md](AI_MODEL_LICENSE.md).
 
 ## Milestone 3 — AI inference FastAPI service
 
@@ -112,7 +112,7 @@ ai\.venv\Scripts\python.exe -m pytest -v
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /api/try-on` | multipart form: `person_image`, `garment_image` (JPEG/PNG/WebP, ≤10MB, ≤4096px), `category` (`tops`\|`bottoms`\|`one-pieces`), optional `num_timesteps`/`seed`. Returns `202 {job_id, status}` immediately — generation runs in the background (this is not optional: on this CPU-only dev machine a job takes 10-70+ minutes depending on step count, so the request must not block). `garment_photo_type` other than the default `"flat-lay"` is rejected with a clear message — see the known limitation above. |
+| `POST /api/try-on` | multipart form: `person_image`, `garment_image` (JPEG/PNG/WebP, ≤10MB, ≤4096px), `category` (`tops`\|`bottoms`\|`one-pieces`), optional `garment_photo_type` (`"flat-lay"` default, or `"model"` for a garment already worn by another person — anything else is rejected with a clear message), optional `num_timesteps`/`seed`. Returns `202 {job_id, status}` immediately — generation runs in the background (this is not optional: on this CPU-only dev machine a job takes 10-70+ minutes depending on step count, so the request must not block). |
 | `GET /api/try-on/{job_id}` | `{status: pending\|processing\|completed\|failed, error, result_url}`. Poll this. |
 | `GET /api/try-on/{job_id}/result` | The generated PNG, once `status == completed`. |
 

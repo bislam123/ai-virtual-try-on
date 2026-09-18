@@ -9,12 +9,19 @@ description = "AI Try-On's modular product/clothing image extraction system."
 license = { text = "MIT" }
 authors = [{ name = "AI Try-On project" }]
 requires-python = ">=3.10"
+# Pinned to exact versions (not floor-only >=): matches backend/requirements.txt's
+# approach (see its comment) -- this package is only ever installed editable
+# into this project's own shared venv (ai/.venv), never published standalone,
+# so there's no reason to keep it loosely bounded the way a publishable
+# library would be. Every version below is exactly what's installed and
+# passing the full test suite as of 2026-09-19. Bump deliberately, one at a
+# time, and re-run the full backend suite before committing a bump.
 dependencies = [
-    "pillow>=9.0.0",
-    "numpy>=1.21.0",
-    "opencv-contrib-python>=4.5.0",
-    "httpx>=0.25.0",
-    "beautifulsoup4>=4.12.0",
+    "pillow==12.3.0",
+    "numpy==2.4.6",
+    "opencv-contrib-python==5.0.0.93",
+    "httpx==0.28.1",
+    "beautifulsoup4==4.15.0",
 ]
 
 [tool.setuptools.packages.find]

@@ -3,18 +3,28 @@
 # aitryon-bodyparser) plus the web-framework packages below. See
 # docs/DEVELOPMENT.md for why they currently share one environment, and when
 # that would need to split (e.g. backend and AI inference on different hosts).
-fastapi>=0.115
-uvicorn[standard]>=0.30
-python-multipart>=0.0.9
-pydantic-settings>=2.4
-email-validator>=2.0
+#
+# Pinned to exact versions (not floor-only >=), deliberately: this project
+# has no lockfile/pip-compile tooling anywhere else, and adding one just for
+# this would be new tooling for a handful of packages — pinning the direct
+# dependencies themselves is the smallest change that makes `pip install -r
+# requirements.txt` reproducible instead of resolving to whatever's newest
+# on install day. Every version below is exactly what's installed in
+# ai/.venv and passing the full test suite as of 2026-09-19. Bump
+# deliberately (not via a blanket `pip install -U`), one at a time, and
+# re-run the full backend suite (`pytest`) before committing a bump.
+fastapi==0.141.1
+uvicorn[standard]==0.53.0
+python-multipart==0.0.32
+pydantic-settings==2.15.0
+email-validator==2.3.0
 
 # Milestone 6: accounts & database
-sqlalchemy>=2.0
-alembic>=1.13
-psycopg2-binary>=2.9
-bcrypt>=4.0
-pyjwt>=2.8
+sqlalchemy==2.0.53
+alembic==1.20.0
+psycopg2-binary==2.9.13
+bcrypt==5.0.0
+pyjwt==2.14.0
 
 # Milestones 7-8: product image/URL extraction — local editable package, see
 # product-extractor/. Install with:
