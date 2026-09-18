@@ -204,3 +204,96 @@ def test_production_does_not_reject_the_localhost_dev_default_origins():
     not less, so this check does not flag it."""
     s = Settings(environment="production", jwt_secret_key=_SECURE_JWT, database_url=_SECURE_DB_URL)
     s.check_production_cors()  # must not raise, even though cors_origins is still the dev default
+
+
+# --- Settings.check_production_email_provider ---------------------------------
+
+_VALID_SMTP_KWARGS = dict(
+    email_provider="smtp",
+    smtp_host="smtp.example.com",
+    email_from_address="no-reply@example.com",
+)
+
+
+def test_email_provider_defaults_to_console():
+    assert Settings().email_provider == "console"
+
+
+def test_invalid_email_provider_value_rejected_at_construction():
+    """A Literal, not a bare str -- a typo fails loudly at Settings()
+    construction itself, before check_production_email_provider ever runs."""
+    with pytest.raises(Exception):  # pydantic ValidationError
+        Settings(email_provider="sendgrid")
+
+
+def test_development_environment_with_console_provider_does_not_raise():
+    """Exactly today's local dev / test-suite experience -- must remain
+    completely unaffected by this feature."""
+    s = Settings(environment="development")
+    s.check_production_email_provider()  # must not raise
+
+
+def test_production_rejects_console_email_provider():
+    s = Settings(
+        environment="production", jwt_secret_key=_SECURE_JWT, database_url=_SECURE_DB_URL, email_provider="console"
+    )
+    with pytest.raises(InsecureProductionConfigError, match="AITRYON_EMAIL_PROVIDER"):
+        s.check_production_email_provider()
+
+
+def test_production_rejects_smtp_provider_with_missing_host():
+    s = Settings(
+        environment="production",
+        jwt_secret_key=_SECURE_JWT,
+        database_url=_SECURE_DB_URL,
+        email_provider="smtp",
+        smtp_host="",
+        email_from_address="no-reply@example.com",
+    )
+    with pytest.raises(InsecureProductionConfigError, match="AITRYON_SMTP_HOST"):
+        s.check_production_email_provider()
+
+
+def test_production_rejects_smtp_provider_with_missing_from_address():
+    s = Settings(
+        environment="production",
+        jwt_secret_key=_SECURE_JWT,
+        database_url=_SECURE_DB_URL,
+        email_provider="smtp",
+        smtp_host="smtp.example.com",
+        email_from_address="",
+    )
+    with pytest.raises(InsecureProductionConfigError, match="AITRYON_EMAIL_FROM_ADDRESS"):
+        s.check_production_email_provider()
+
+
+def test_production_accepts_fully_configured_smtp_provider():
+    s = Settings(
+        environment="production",
+        jwt_secret_key=_SECURE_JWT,
+        database_url=_SECURE_DB_URL,
+        **_VALID_SMTP_KWARGS,
+    )
+    s.check_production_email_provider()  # must not raise
+
+
+def test_development_environment_allows_smtp_provider_without_production_secrets():
+    """Selecting smtp locally (e.g. against Mailhog/Mailtrap) must not
+    require AITRYON_ENVIRONMENT=production or its unrelated JWT/DB
+    checks -- this is a normal, supported dev use of the setting."""
+    s = Settings(environment="development", **_VALID_SMTP_KWARGS)
+    s.check_production_email_provider()  # must not raise
+
+
+def test_email_provider_error_message_never_contains_smtp_password():
+    surprising_password = "sk_live_totally_made_up_regression_probe_value_123456"
+    s = Settings(
+        environment="production",
+        jwt_secret_key=_SECURE_JWT,
+        database_url=_SECURE_DB_URL,
+        email_provider="console",
+        smtp_password=surprising_password,
+    )
+    with pytest.raises(InsecureProductionConfigError) as exc_info:
+        s.check_production_email_provider()
+    assert surprising_password not in str(exc_info.value)

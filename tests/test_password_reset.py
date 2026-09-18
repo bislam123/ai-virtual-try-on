@@ -26,7 +26,7 @@ from sqlalchemy.exc import OperationalError
 from backend.app.api import auth as auth_module
 from backend.app.core.errors import configure_exception_handlers
 from backend.app.db import PasswordResetToken, User, engine, get_session
-from backend.app.services.email_service import EmailService
+from backend.app.services.email_service import EmailDeliveryError, EmailService
 from backend.app.services.password_reset_service import cleanup_expired_password_reset_tokens, issue_reset_token
 from backend.app.services.rate_limiter import RateLimiter
 
@@ -59,6 +59,21 @@ class FakeEmailService(EmailService):
 
     def send_password_reset_email(self, to_email, reset_url):
         self.sent.append((to_email, reset_url))
+
+
+class FailingEmailService(EmailService):
+    """A real (non-Console) EmailService implementation whose send always
+    fails -- stands in for e.g. an SmtpEmailService hitting a genuine SMTP
+    error, without any real network/provider. Records each attempted
+    (to_email, reset_url) before raising, so a test can confirm what
+    *would* have been sent even though delivery "failed"."""
+
+    def __init__(self):
+        self.attempted = []
+
+    def send_password_reset_email(self, to_email, reset_url):
+        self.attempted.append((to_email, reset_url))
+        raise EmailDeliveryError("Failed to send password reset email.")
 
 
 def _extract_token(reset_url: str) -> str:
@@ -180,6 +195,73 @@ def test_forgot_password_is_case_insensitive_like_signup_and_login(client, test_
 
     assert resp.status_code == 200
     assert len(email_service.sent) == 1
+
+
+def test_forgot_password_email_delivery_failure_still_returns_generic_success(client, test_email):
+    """A genuine send failure (e.g. SmtpEmailService hitting a real SMTP
+    error) must never surface as a different status code, body, or
+    exception -- see api/auth.py's forgot_password docstring."""
+    signup(client, test_email)
+    app = make_test_app(email_service=FailingEmailService())
+    with TestClient(app) as failing_client:
+        resp = failing_client.post("/api/auth/forgot-password", json={"email": test_email})
+
+    assert resp.status_code == 200
+    assert "If an account exists" in resp.json()["message"]
+
+
+def test_email_delivery_failure_response_identical_to_success_response(client, test_email):
+    """Extends the existing known/unknown-email identical-response
+    guarantee to a third case: delivery failure must look the same as
+    both, not introduce a new, distinguishable outcome."""
+    signup(client, test_email)
+    success_resp = forgot_password(client, test_email)
+
+    failing_app = make_test_app(email_service=FailingEmailService())
+    with TestClient(failing_app) as failing_client:
+        failure_resp = failing_client.post("/api/auth/forgot-password", json={"email": test_email})
+
+    assert success_resp.status_code == failure_resp.status_code == 200
+    assert success_resp.json() == failure_resp.json()
+
+
+def test_email_delivery_failure_does_not_persist_a_reset_token(client, test_email):
+    """Token creation and delivery share one transaction (see
+    api/auth.py's forgot_password docstring) -- a failed send must roll
+    the token insert back, not leave a real-but-undelivered token
+    occupying the account's single outstanding-token slot."""
+    signup(client, test_email)
+    failing_service = FailingEmailService()
+    app = make_test_app(email_service=failing_service)
+    with TestClient(app) as failing_client:
+        failing_client.post("/api/auth/forgot-password", json={"email": test_email})
+
+    assert len(failing_service.attempted) == 1  # delivery really was attempted
+
+    with get_session() as session:
+        user = session.query(User).filter(User.email == test_email).first()
+        remaining = session.query(PasswordResetToken).filter(PasswordResetToken.user_id == user.id).count()
+    assert remaining == 0
+
+
+def test_retry_after_email_delivery_failure_issues_a_working_token(client, test_email, email_service):
+    """A user whose first attempt hit a transient delivery failure must
+    be able to just try again (rate limits permitting) and get a real,
+    usable reset -- not be stuck because of a dangling failed token."""
+    signup(client, test_email)
+    failing_app = make_test_app(email_service=FailingEmailService())
+    with TestClient(failing_app) as failing_client:
+        failing_client.post("/api/auth/forgot-password", json={"email": test_email})
+
+    # Retry against the working (Fake) service, via the normal `client` fixture.
+    resp = forgot_password(client, test_email)
+    assert resp.status_code == 200
+    assert len(email_service.sent) == 1
+    token = _extract_token(email_service.sent[0][1])
+
+    reset_resp = reset_password(client, token, "brand-new-password-789")
+    assert reset_resp.status_code == 200
+    assert login(client, test_email, "brand-new-password-789").status_code == 200
 
 
 def test_forgot_password_malformed_email_rejected(client):

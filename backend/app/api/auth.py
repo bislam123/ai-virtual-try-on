@@ -16,7 +16,7 @@ from ..models.schemas import (
     SignupRequest,
     UserResponse,
 )
-from ..services.email_service import EmailService
+from ..services.email_service import EmailDeliveryError, EmailService
 from ..services.password_reset_service import consume_reset_token, issue_reset_token
 from ..services.rate_limiter import RateLimiter
 from ..services.storage import StorageService
@@ -165,28 +165,50 @@ async def forgot_password(
     email_service: EmailService = Depends(get_email_service),
 ):
     """Always returns FORGOT_PASSWORD_GENERIC_MESSAGE, whether or not
-    `body.email` belongs to a real account and whether or not an email was
-    actually sent -- the same never-reveal-account-existence guarantee
-    login() applies to GENERIC_LOGIN_ERROR, applied here to the response
-    itself rather than to an error message, since this endpoint has no
-    failure mode that's safe to expose at all. Rate-limited exactly like
-    login (dual IP + email key, same generic 429 either way, see
-    _check_rate_limit) before ever touching the database, so a rate-limit
-    response itself is equally uninformative about whether the email is
-    registered.
+    `body.email` belongs to a real account, whether or not an email was
+    actually sent, and whether or not delivery itself succeeded -- the
+    same never-reveal-account-existence guarantee login() applies to
+    GENERIC_LOGIN_ERROR, applied here to the response itself rather than
+    to an error message, since this endpoint has no failure mode that's
+    safe to expose at all. Rate-limited exactly like login (dual IP +
+    email key, same generic 429 either way, see _check_rate_limit) before
+    ever touching the database, so a rate-limit response itself is
+    equally uninformative about whether the email is registered.
+
+    Token creation and email delivery deliberately share one transaction
+    (the `with get_session()` block below): issue_reset_token's INSERT
+    and the send both happen inside it, so a real delivery failure
+    (EmailDeliveryError, raised by e.g. SmtpEmailService -- see
+    services/email_service.py) propagates out of the block and rolls the
+    token insert back via get_session()'s own except-clause, instead of
+    leaving a real-but-never-delivered token occupying that account's
+    single outstanding-token slot (issue_reset_token invalidates any
+    prior one). A subsequent attempt, rate limits permitting, issues a
+    genuinely fresh token rather than being blocked by one nobody
+    received. The response is identical either way -- delivery failure
+    is caught below and never allowed to change status code or body, and
+    the exception itself carries no provider detail to leak even if it
+    weren't caught.
     """
     client_ip = request.client.host if request.client else "unknown"
     _check_rate_limit(f"ip:{client_ip}", ip_limiter)
     _check_rate_limit(f"email:{body.email.lower()}", email_limiter)
 
-    with get_session() as session:
-        user = session.query(User).filter(User.email == body.email.lower()).first()
-        if user is not None:
-            raw_token = issue_reset_token(session, user)
-            reset_url = f"{settings.frontend_base_url.rstrip('/')}/?reset_token={raw_token}"
-            email_service.send_password_reset_email(user.email, reset_url)
-        # else: deliberately a no-op -- no account is created, nothing is
-        # logged that would distinguish this from the found-user branch.
+    try:
+        with get_session() as session:
+            user = session.query(User).filter(User.email == body.email.lower()).first()
+            if user is not None:
+                raw_token = issue_reset_token(session, user)
+                reset_url = f"{settings.frontend_base_url.rstrip('/')}/?reset_token={raw_token}"
+                email_service.send_password_reset_email(user.email, reset_url)
+            # else: deliberately a no-op -- no account is created, nothing is
+            # logged that would distinguish this from the found-user branch.
+    except EmailDeliveryError:
+        # Already logged safely (exception type only, no token/email/
+        # credentials) inside the EmailService implementation itself.
+        # Falls through to the exact same response as success -- see the
+        # docstring above for why.
+        pass
 
     return MessageResponse(message=FORGOT_PASSWORD_GENERIC_MESSAGE)
 

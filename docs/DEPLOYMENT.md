@@ -101,13 +101,14 @@ If throughput ever genuinely requires more than one concurrent generation, that'
 
 ## 13. Pre-deployment checklist
 
-Application-side only — does not include provisioning the GPU host, payments, or a real email provider (all explicitly deferred, see project scope).
+Application-side only — does not include provisioning the GPU host or payments (both explicitly deferred, see project scope). Real email delivery is no longer deferred — see below.
 
 - [ ] `AITRYON_ENVIRONMENT=production` set
 - [ ] `AITRYON_JWT_SECRET_KEY` generated fresh (`secrets.token_hex(32)`), not the dev default
 - [ ] `AITRYON_DATABASE_URL` points at the real production database, not the dev credential
 - [ ] `AITRYON_CORS_ORIGINS` set to the real frontend origin(s), not `"*"`, not the localhost default
 - [ ] `AITRYON_FRONTEND_BASE_URL` set to the real frontend origin
+- [ ] `AITRYON_EMAIL_PROVIDER=smtp`, with `AITRYON_SMTP_HOST`/`AITRYON_EMAIL_FROM_ADDRESS` (and, for almost every real provider, `AITRYON_SMTP_USERNAME`/`AITRYON_SMTP_PASSWORD`) set — the app refuses to start otherwise (`Settings.check_production_email_provider`); see [ENVIRONMENT.md](ENVIRONMENT.md)'s "Email delivery" section
 - [ ] `AITRYON_STORAGE_DIR` points at a durable, persistent volume
 - [ ] `alembic upgrade head` run against the production database
 - [ ] `alembic check` run and clean (no drift) before every deploy going forward
@@ -119,4 +120,4 @@ Application-side only — does not include provisioning the GPU host, payments, 
 - [ ] `GET /health` returns `200` against the real deployment before routing real traffic to it
 - [ ] `VITE_API_BASE_URL` (frontend build) points at the real deployed backend URL
 
-Deliberately not on this list, tracked separately per the project's own scope rules: GPU hosting provisioning, payments/subscriptions, a real transactional-email provider (currently `ConsoleEmailService`, a documented dev stand-in — see `services/email_service.py`).
+Deliberately not on this list, tracked separately per the project's own scope rules: GPU hosting provisioning, payments/subscriptions.

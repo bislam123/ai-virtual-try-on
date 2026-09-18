@@ -17,7 +17,7 @@ from .providers.selfhosted import SelfHostedVTONProvider
 from .services.admin_service import AdminService
 from .services.capacity_service import CapacityService
 from .services.db_job_store import DbJobStore
-from .services.email_service import ConsoleEmailService
+from .services.email_service import ConsoleEmailService, SmtpEmailService
 from .services.job_recovery import recover_stale_processing_jobs
 from .services.quota_service import QuotaService
 from .services.rate_limiter import RateLimiter
@@ -85,10 +85,23 @@ async def lifespan(app: FastAPI):
         settings.auth_forgot_password_email_rate_limit_max_requests,
         settings.auth_forgot_password_email_rate_limit_window_seconds,
     )
-    # See services/email_service.py's module docstring for why this is a
-    # console/dev stand-in, not a real send, and what a production
-    # deployment needs to swap in instead.
-    app.state.email_service = ConsoleEmailService()
+    # Provider selection is explicit (AITRYON_EMAIL_PROVIDER) -- see
+    # config.py's check_production_email_provider for why production can
+    # never silently stay on ConsoleEmailService, and
+    # services/email_service.py's module docstring for why SMTP
+    # specifically, not a vendor SDK.
+    if settings.email_provider == "smtp":
+        app.state.email_service = SmtpEmailService(
+            host=settings.smtp_host,
+            port=settings.smtp_port,
+            username=settings.smtp_username,
+            password=settings.smtp_password,
+            use_tls=settings.smtp_use_tls,
+            from_address=settings.email_from_address,
+            from_name=settings.email_from_name,
+        )
+    else:
+        app.state.email_service = ConsoleEmailService()
     app.state.quota_service = QuotaService()
     app.state.capacity_service = CapacityService()
     app.state.admin_service = AdminService()

@@ -9,7 +9,7 @@ project brief asks for around usage limits.
 """
 
 from pathlib import Path
-from typing import List
+from typing import List, Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -241,6 +241,36 @@ class Settings(BaseSettings):
     # already documents for cors_origins itself.
     frontend_base_url: str = "http://localhost:5173"
 
+    # --- Email delivery (see app/services/email_service.py) ---
+    # Explicit, never inferred: "console" (default -- prints the password
+    # reset link to the server's own stdout, dev/test only, never sends
+    # anything) or "smtp" (real delivery via stdlib smtplib against any
+    # SMTP-speaking provider -- SendGrid/Mailgun/SES/Postmark/a corporate
+    # relay all support SMTP, typically with an API key as the password,
+    # so this one implementation covers all of them without adding a
+    # vendor-specific SDK dependency). A Literal, not a bare str: an
+    # invalid value (a typo) fails loudly at Settings construction,
+    # before check_production_email_provider below even runs. See that
+    # method for why production can never silently stay on "console".
+    email_provider: Literal["console", "smtp"] = "console"
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    # Never logged, never printed anywhere -- see
+    # services/email_service.py's SmtpEmailService, which only ever logs
+    # an exception's *type* on a failed send, never str(exception) (an
+    # SMTP server's error response can echo back request detail) or this
+    # value itself.
+    smtp_password: str = ""
+    smtp_use_tls: bool = True
+    # Required whenever email_provider="smtp" -- validated both here
+    # (production-only, see check_production_email_provider) and by
+    # SmtpEmailService's own constructor (environment-agnostic), so a
+    # misconfiguration fails at the moment the service is actually built,
+    # never silently at first send.
+    email_from_address: str = ""
+    email_from_name: str = "AI Try-On"
+
     def check_production_secrets(self) -> None:
         """Call once, right after construction (see the bottom of this
         module) -- refuses to start (raises before the app can serve a
@@ -319,7 +349,54 @@ class Settings(BaseSettings):
                 'contains a wildcard ("*"). Set it to your production frontend\'s exact origin(s).'
             )
 
+    def check_production_email_provider(self) -> None:
+        """Refuses to start with AITRYON_ENVIRONMENT=production while
+        email_provider is still "console" -- the dev/test stand-in that
+        prints password reset links to the server's own stdout and never
+        actually delivers anything (see services/email_service.py's
+        ConsoleEmailService). Without this check, a production deploy
+        that simply forgot to configure real email would silently accept
+        every forgot-password request, return the normal-looking generic
+        success message, and never send the user anything -- indistinguishable
+        from working, right up until a real user needs it. Same shape as
+        check_production_secrets/check_production_cors above.
+
+        Also refuses to start if "smtp" is selected but a genuinely
+        required field (the host to connect to, or the address mail
+        appears to come from) is still blank -- SmtpEmailService's own
+        constructor validates the same two fields independently
+        (environment-agnostic), so this is defense in depth, not the
+        only place it's caught.
+
+        Deliberately does NOT require AITRYON_ENVIRONMENT=production to
+        select "smtp" in the first place -- a developer testing against a
+        real inbox locally (Mailhog, Mailtrap, a personal SMTP account)
+        is a normal, supported use of this setting outside production too.
+        """
+        if self.environment != "production":
+            return
+
+        problems = []
+        if self.email_provider == "console":
+            problems.append(
+                'AITRYON_EMAIL_PROVIDER is still "console" (prints password reset links to the server '
+                'console instead of emailing them). Set AITRYON_EMAIL_PROVIDER=smtp and the accompanying '
+                "AITRYON_SMTP_*/AITRYON_EMAIL_FROM_ADDRESS settings."
+            )
+        elif self.email_provider == "smtp":
+            if not self.smtp_host:
+                problems.append("AITRYON_SMTP_HOST is required when AITRYON_EMAIL_PROVIDER=smtp.")
+            if not self.email_from_address:
+                problems.append("AITRYON_EMAIL_FROM_ADDRESS is required when AITRYON_EMAIL_PROVIDER=smtp.")
+
+        if problems:
+            raise InsecureProductionConfigError(
+                "Refusing to start with AITRYON_ENVIRONMENT=production while email delivery isn't "
+                "properly configured:\n" + "\n".join(f"  - {p}" for p in problems)
+            )
+
 
 settings = Settings()
 settings.check_production_secrets()
 settings.check_production_cors()
+settings.check_production_email_provider()
