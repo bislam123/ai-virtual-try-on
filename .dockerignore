@@ -1,0 +1,33 @@
+# Keep the production image lean and free of dev-only files, secrets, and
+# anything not actually needed at runtime -- see Dockerfile's own comments
+# for the explicit COPY allowlist this backs up (belt and suspenders, not
+# the only thing preventing these from shipping).
+
+.git
+.github
+
+# Never bake real secrets into an image layer.
+.env
+.env.*
+!.env.example
+
+# Dev/test-only, not part of the runtime image.
+tests/
+docs/
+*.md
+frontend/
+extension/
+product-extractor/tests/
+ai/outputs/
+ai/.venv/
+ai/models/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/node_modules/
+backend/storage/
+
+# This project's own scratch/dev artifacts.
+.claude/
+.vscode/
+.idea/

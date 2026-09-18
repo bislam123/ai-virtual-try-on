@@ -1,0 +1,22 @@
+# Hourly -- reasonable against the default 24h unsaved-result TTL
+# (AITRYON_UNSAVED_RESULT_TTL_HOURS) and the 120-minute stale-job
+# threshold (AITRYON_STALE_JOB_THRESHOLD_MINUTES), same cadence
+# docs/DEPLOYMENT.md already recommended before this timer existed.
+# Install alongside aitryon-cleanup.service:
+#   systemctl daemon-reload && systemctl enable --now aitryon-cleanup.timer
+# Check it actually ran: systemctl list-timers aitryon-cleanup.timer
+
+[Unit]
+Description=Run aitryon-cleanup.service hourly
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+# Spreads load if this host ever runs more than one scheduled job at
+# :00 -- harmless here with just one, kept for the same reason it's a
+# common default: cheap insurance against a future addition colliding.
+RandomizedDelaySec=2min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

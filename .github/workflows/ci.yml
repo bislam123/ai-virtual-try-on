@@ -1,0 +1,115 @@
+# CI only -- tests, build, lint, migration-drift check. No deploy step
+# anywhere in this file, deliberately (see docs/DEPLOYMENT.md; this
+# milestone's own scope explicitly excludes deploying). Not verified by
+# an actual GitHub Actions run in the environment that wrote this (no gh
+# CLI / GitHub access available there) -- reviewed carefully against this
+# repo's own documented install sequence and existing test conventions,
+# but an operator should watch the first real run before trusting it.
+#
+# Backend AI-pipeline packages (torch, onnxruntime, mediapipe, opencv)
+# are installed here (same packages every backend test run already needs
+# at import time) but the ~2.3GB model weights are NOT downloaded --
+# every test that would otherwise need a real model injects a fake
+# provider instead (see backend/app/providers/base.py's test-only
+# injection point, used throughout tests/test_selfhosted_provider.py and
+# friends) -- confirmed by inspection, not assumed, before leaving weight
+# download out of this workflow.
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: aitryon_test
+          POSTGRES_PASSWORD: aitryon_test_password
+          POSTGRES_DB: aitryon_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # A CI-only database -- never the local dev default, never a real
+      # credential. check_production_secrets/check_production_email_provider
+      # never run here since AITRYON_ENVIRONMENT is left unset (defaults
+      # to "development", the same as the local test suite -- see
+      # backend/app/config.py).
+      AITRYON_DATABASE_URL: postgresql+psycopg2://aitryon_test:aitryon_test_password@localhost:5432/aitryon_test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          # Keyed on every file that influences what gets installed --
+          # any dependency pin change anywhere invalidates the cache.
+          key: pip-${{ runner.os }}-${{ hashFiles('backend/requirements.txt', 'ai/vendor/**/pyproject.toml', 'ai/preprocessing/pyproject.toml', 'product-extractor/pyproject.toml') }}
+
+      - name: Install backend + AI pipeline dependencies (CPU -- no GPU in CI)
+        run: |
+          python -m pip install --upgrade pip
+          # CPU wheel index -- same reasoning as local dev (see
+          # docs/DEVELOPMENT.md): CI has no GPU, so the CUDA build would
+          # only add ~2.5GB of unusable runtime libraries.
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ai/vendor/aitryon-bodyparser
+          pip install -e ai/vendor/fashn-vton-1.5
+          pip install -e ai/preprocessing
+          pip uninstall -y opencv-python || true
+          pip install opencv-contrib-python
+          pip install -e product-extractor
+          pip install -r backend/requirements.txt
+          pip install pytest httpx
+
+      - name: Run database migrations
+        working-directory: backend
+        run: python -m alembic upgrade head
+
+      - name: Alembic check (no drift between models.py and migration history)
+        working-directory: backend
+        run: python -m alembic check
+
+      - name: Run backend test suite
+        run: python -m pytest -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+
+      - name: Run frontend test suite
+        run: npm run test -- --run
+
+      - name: Build
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint

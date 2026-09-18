@@ -1,0 +1,65 @@
+# Reference systemd unit for running the backend directly on a host (the
+# non-container alternative to Dockerfile -- see docs/DEPLOYMENT.md
+# section 2 for when to use which). NOT installed/enabled by anything in
+# this repository; an operator copies this to /etc/systemd/system/,
+# edits the paths/User for their host, then:
+#   systemctl daemon-reload && systemctl enable --now aitryon-backend
+#
+# Assumes the same shared venv layout docs/DEVELOPMENT.md already
+# documents (ai/.venv, backend/ importable from the repo root) and that
+# `alembic upgrade head` (backend/alembic.ini) has already been run
+# manually against the target database -- this unit deliberately does
+# NOT run migrations itself (see docs/DEPLOYMENT.md section 9: this
+# application never auto-runs migrations, in a container or otherwise).
+#
+# Real secrets (AITRYON_JWT_SECRET_KEY, AITRYON_DATABASE_URL,
+# AITRYON_SMTP_PASSWORD, ...) belong in EnvironmentFile below, a file
+# outside version control with permissions systemd itself enforces
+# (600, owned by the service user) -- never inline in this unit file,
+# which may be world-readable.
+
+[Unit]
+Description=AI Try-On backend (FastAPI + in-process AI inference)
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=aitryon
+Group=aitryon
+WorkingDirectory=/opt/aitryon
+EnvironmentFile=/etc/aitryon/backend.env
+
+# --workers 1 is not a placeholder -- see docs/DEPLOYMENT.md section 5
+# for why more than one worker would load a second full copy of the AI
+# model and hold an independent generation lock. Add
+# --forwarded-allow-ips=<reverse proxy's IP> here once a reverse proxy is
+# actually in front of this (never '*') -- see docs/DEPLOYMENT.md
+# section 12.
+ExecStart=/opt/aitryon/ai/.venv/bin/python -m uvicorn backend.app.main:app \
+    --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers
+
+# SIGTERM, then wait -- a real generation can take minutes to hours on
+# CPU and cannot be safely force-stopped mid-flight (see
+# providers/selfhosted.py's own module docstring); a job caught mid-
+# generation by this timeout self-heals via the stale-job recovery sweep
+# at next startup (services/job_recovery.py), not via a graceful drain
+# this unit could meaningfully wait for. Kept short on purpose -- see
+# docs/DEPLOYMENT.md section 7.
+TimeoutStopSec=10
+KillSignal=SIGTERM
+Restart=on-failure
+RestartSec=5
+
+# Defense in depth, not a substitute for the application's own checks
+# (JWT/DB/CORS/email-provider refusal already happen inside the process
+# itself at import time -- see backend/app/config.py).
+NoNewPrivileges=true
+ProtectSystem=strict
+# Storage is the one path this process must be able to write to --
+# ReadWritePaths overrides ProtectSystem=strict specifically for it. Point
+# this at wherever AITRYON_STORAGE_DIR (in backend.env) actually resolves.
+ReadWritePaths=/var/lib/aitryon/storage
+
+[Install]
+WantedBy=multi-user.target

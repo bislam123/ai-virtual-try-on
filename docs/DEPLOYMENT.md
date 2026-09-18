@@ -1,123 +1,263 @@
 # Production Deployment Preparation
 
-Application-side readiness only. This document does not deploy anything, choose GPU hosting, or stand up infrastructure — it records what the application already does correctly, what an operator must configure or wire up externally, and exactly which commands/flags to use when that happens. See [ENVIRONMENT.md](ENVIRONMENT.md) for the full environment-variable reference and [ARCHITECTURE.md](ARCHITECTURE.md) for design rationale — this file is the operational checklist, not a design doc.
+Application-side readiness only. **Nothing in this document means the application is deployed** — no real hosting, GPU, domain, TLS certificate, or production database exists. This file records what the application already does correctly, what concrete artifacts exist for an operator to use, what still needs real operator configuration, and what needs infrastructure this repository cannot provide. See [ENVIRONMENT.md](ENVIRONMENT.md) for the full environment-variable reference and [ARCHITECTURE.md](ARCHITECTURE.md) for design rationale.
+
+**Status key**, used throughout:
+- **Implemented** — the application code already does this; verified by test and/or direct inspection.
+- **Deployment-ready** — a concrete artifact exists (Dockerfile, systemd unit, nginx config, CI workflow) for an operator to use.
+- **Requires operator configuration** — works once real values are supplied (env vars, secrets, DNS, a certificate).
+- **Requires external infrastructure** — needs something this repository cannot provide (a real GPU host, Postgres server, domain, TLS cert, SMTP account).
+- **Not yet implemented / deferred** — explicitly out of scope for this milestone (GPU purchase, payments, an actual deployment).
 
 ---
 
-## 1. Production environment configuration
+## 1. Deployment architecture
 
-Every setting lives in `backend/app/config.py` (`pydantic-settings`, prefix `AITRYON_`), with dev-friendly defaults. Two are secrets that **must** be overridden outside local dev, and one is a startup-time behavior switch:
+**Decision: keep `SelfHostedVTONProvider` in-process for the initial deployment — do not split inference into a separate GPU worker service yet.**
+
+Inspected before deciding: `VirtualTryOnProvider` (`backend/app/providers/base.py`) is already an interface with one implementation, `SelfHostedVTONProvider`, constructed once in `main.py`'s `lifespan()` and injected into `TryOnService`. Nothing about "keeping the provider replaceable" requires building a second implementation now — the interface already makes that possible later with zero changes to `TryOnService`, the API layer, the database, or the frontend, exactly as it already did for every earlier provider-level change in this project.
+
+Two topologies were weighed:
+
+| | **A — In-process (chosen)** | **B — Separate GPU worker** |
+|---|---|---|
+| Shape | Backend (auth/DB/storage/rate-limiting) and `SelfHostedVTONProvider` run in one process, on one GPU-equipped host | Backend stays on a cheap CPU host; a new, separate service wraps `SelfHostedVTONProvider` behind an internal API; a new `VirtualTryOnProvider` implementation (e.g. `RemoteGPUVTONProvider`) calls it over the network |
+| New code required | None | A new microservice, a new provider implementation, inter-service auth, a queue or direct-call protocol between them |
+| Operational complexity | One process to deploy/monitor/restart | Two services, a network boundary between them, two sets of secrets, two failure domains |
+| Cost shape | GPU billed for the whole app's uptime, not just active generation | GPU only needs to run while generating — cheaper if traffic is sporadic, *if* the platform supports scale-to-zero |
+| Matches current scale | Yes — single inference lock already caps this app at one concurrent generation regardless of topology (see §5) | Would matter once real concurrent-throughput demand exists, which it doesn't yet |
+
+Chosen A because: no genuine need has been demonstrated for B's added complexity (no real traffic yet, one physical GPU, the single in-process lock means B wouldn't even unlock more *concurrent* generations — see §5); it requires zero new code, matching this milestone's own instruction not to introduce a distributed queue unless genuinely required; and the abstraction already keeps B available later without having to build it speculatively now. This is the same reasoning the project's own GPU-hosting-planning work already reached when comparing hosting *approaches* (low-cost/dedicated/serverless, all still under topology A) — this section makes the topology choice itself explicit and permanent for this milestone, not just a hosting-cost comparison.
+
+```
+Browser/PWA
+    ↓ HTTPS
+Reverse proxy (TLS termination, forwarded headers — §12)
+    ↓
+Backend process (FastAPI + auth + DB access + storage + SelfHostedVTONProvider, one process — §5)
+    ↓                                   ↓
+Postgres (durable, can be                Persistent volume (results/temp — §10)
+a separate managed host)
+```
+
+Revisit topology B only when real measured demand shows the single-lock ceiling is actually being hit — not speculatively.
+
+## 2. Production environment configuration — **Implemented**
+
+Every setting lives in `backend/app/config.py` (`pydantic-settings`, prefix `AITRYON_`), with dev-friendly defaults.
 
 | Variable | Must change for production? | What happens if you forget |
 |---|---|---|
-| `AITRYON_ENVIRONMENT` | Set to `production` | Without this, the two checks below never run — the app would start with insecure defaults silently. |
-| `AITRYON_JWT_SECRET_KEY` | Yes — generate with `python -c "import secrets; print(secrets.token_hex(32))"` | With `AITRYON_ENVIRONMENT=production` set, the app **refuses to start** (`Settings.check_production_secrets`). |
-| `AITRYON_DATABASE_URL` | Yes — your real Postgres connection string | Same as above — the app refuses to start rather than run against the dev credential. |
-| `AITRYON_CORS_ORIGINS` | Yes — your real frontend origin(s), as a JSON array | Refuses to start only if it's a literal wildcard (`"*"`); left at the localhost dev default it just fails closed (frontend can't reach the API) rather than being insecure — see `Settings.check_production_cors`. |
-| `AITRYON_FRONTEND_BASE_URL` | Yes — your real frontend origin | Not startup-checked (a stale value is a broken password-reset link, not a vulnerability) — but will silently email broken reset links if forgotten. |
+| `AITRYON_ENVIRONMENT` | Set to `production` | Without this, every check below never runs — the app would start with insecure/non-functional defaults silently. |
+| `AITRYON_JWT_SECRET_KEY` | Yes — `python -c "import secrets; print(secrets.token_hex(32))"` | Refuses to start (`Settings.check_production_secrets`). |
+| `AITRYON_DATABASE_URL` | Yes — your real Postgres connection string | Refuses to start. |
+| `AITRYON_CORS_ORIGINS` | Yes — your real frontend origin(s), as a JSON array | Refuses to start only if it's a literal wildcard (`Settings.check_production_cors`); left at the localhost dev default it fails closed instead (frontend can't reach the API), not insecurely. |
+| `AITRYON_EMAIL_PROVIDER` | Yes — `smtp`, plus `AITRYON_SMTP_HOST`/`AITRYON_EMAIL_FROM_ADDRESS` | Refuses to start (`Settings.check_production_email_provider`). |
+| `AITRYON_FRONTEND_BASE_URL` | Yes — your real frontend origin | Not startup-checked (a stale value breaks a password-reset link, not a vulnerability). |
 
-See [ENVIRONMENT.md](ENVIRONMENT.md) for every other tunable (rate limits, timeouts, TTLs) — none of those are production-required changes, only tuning.
+All four startup refusals share one shape: raise `InsecureProductionConfigError` (a plain exception with a static, secret-free message — never a pydantic `ValidationError`, whose own string form would otherwise leak the actual configured value) before the app can serve a single request. See §9 for the complete secrets/config inventory and §19 for a copy-pasteable checklist.
 
-## 2. Startup validation (already in place)
+## 3. Startup validation — **Implemented**
 
-The app fails loudly at boot, before serving a single request, in every case that matters:
+The app fails loudly at boot in every case that matters:
 
-- **Insecure secrets/CORS wildcard in production** — `Settings.check_production_secrets()` / `Settings.check_production_cors()`, run at import time (`config.py`, bottom of the file).
-- **AI model weights missing/corrupt** — `SelfHostedVTONProvider.__init__` (called from `main.py`'s `lifespan()`) loads the model synchronously at startup specifically so this fails at boot, not on a user's first request.
-- **Storage directory not writable** — `LocalStorageService.__init__` (`services/storage.py`) calls `Path.mkdir(parents=True, exist_ok=True)` for both the temp and results subdirectories at startup; a permissions problem raises immediately.
-- **Database unreachable** — `lifespan()` runs a real query (the stale-job recovery sweep, `recover_stale_processing_jobs`) against the database before the app finishes starting, so an unreachable database prevents startup rather than surfacing later as scattered request failures.
+- **Insecure secrets/CORS wildcard/console email provider in production** — the three checks in §2, run at import time (`config.py`, bottom of the file).
+- **AI model weights missing/corrupt** — `SelfHostedVTONProvider.__init__` (`main.py`'s `lifespan()`) loads the model synchronously at startup specifically so this fails at boot.
+- **Storage directory not writable** — `LocalStorageService.__init__` (`services/storage.py`) creates both subdirectories at startup; a permissions problem raises immediately.
+- **Database unreachable** — `lifespan()` runs a real query (the stale-job recovery sweep) before startup finishes.
 
-Nothing further was added here — all four already existed and were verified to actually fail closed, not just documented as if they did.
+## 4. Containerization — **Deployment-ready, build unverified**
 
-## 3. Health / readiness check
+**Decision: Docker for the backend, not blindly, for a specific reason: reproducible CUDA/torch/onnxruntime-gpu version pinning.** This isn't "conventional, so why not" — this project's own docs already document real version-mismatch pain in this exact dependency stack (the Colab multi-interpreter gotcha, the CPU-vs-CUDA torch wheel-index difference, `docs/DEVELOPMENT.md`'s own Colab section). A pinned image closes that class of problem for a GPU deployment specifically, and most GPU rental platforms (RunPod, Vast.ai, ...) expect a Docker image as their native deployment unit anyway.
 
-`GET /health` (no auth, no rate limit — meant for a load balancer / orchestrator / uptime check, not a browser). **Changed this milestone**: it now runs a real `SELECT 1` against the database and returns `503 {"status": "error", "detail": "Database unreachable."}` if that fails, instead of unconditionally returning `200 {"status": "ok"}` regardless of whether the app could actually serve a real request. The AI model and storage directory don't need an equivalent per-request check — both already fail loudly at startup (§2), so if this process is running and answering at all, both are known-good for its entire lifetime; only the database can fail *after* a successful startup (a network blip, a Postgres restart/failover) without the process itself going down.
+**`Dockerfile`** (repo root), multi-stage:
+- Builder stage installs the exact sequence `docs/DEVELOPMENT.md` already documents and has verified working locally (torch/torchvision from the CUDA wheel index → `aitryon-bodyparser` → `fashn-vton-1.5` → `ai/preprocessing` → the `opencv-python`→`opencv-contrib-python` swap → `product-extractor` → `backend/requirements.txt` → `onnxruntime`→`onnxruntime-gpu`), adapted for a non-interactive Linux container.
+- Runtime stage copies only the built venv and application source — no tests, no docs, no `.git`, no frontend, no `ai/outputs` debug images, no model weights (see below). Runs as a non-root user.
+- **Model weights (~2.3GB) are deliberately NOT baked into the image** — same "download once, gitignored, never committed" treatment they already get locally. Mount a persistent volume at `/app/ai/models` and populate it once:
+  ```
+  docker run --rm -v aitryon-models:/app/ai/models --entrypoint python <image> \
+    ai/inference/download_weights.py --weights-dir /app/ai/models/fashn-vton-1.5
+  ```
+- Migrations are **not** run automatically by the image's `CMD` (see §9) — run them as a separate step:
+  ```
+  docker run --rm --env-file backend.env <image> python -m alembic -c backend/alembic.ini upgrade head
+  ```
+- Run:
+  ```
+  docker run -d --gpus all \
+    -v aitryon-models:/app/ai/models \
+    -v aitryon-storage:/app/backend/storage \
+    --env-file backend.env \
+    -p 127.0.0.1:8000:8000 \
+    aitryon-backend:latest
+  ```
 
-One endpoint, not a separate `/health/live` + `/health/ready` split: this app has no orchestrator yet that would consume the two differently, so a single honest check is simpler than two that would answer identically today. Revisit this if/when deployed behind something (e.g. Kubernetes) that distinguishes liveness from readiness.
+**Honest verification status**: this Dockerfile was written by adapting the already-verified local install sequence, and its base image (`nvidia/cuda:12.1.1-cudnn8-*`) was chosen specifically because `onnxruntime-gpu` — unlike torch's CUDA wheels, which bundle their own runtime — historically needs a matching *system* CUDA+cuDNN install. **It has not been build-tested** — no Docker daemon was available in the environment that wrote it. Before relying on it: build the image, run it against a real GPU instance with `--gpus all`, and repeat the real generation smoke test that produced this project's own T4 benchmark (§14) — confirm `nvidia-smi` shows the GPU genuinely in use inside the container, not just that the image builds.
 
-Tests: `tests/test_health_check.py` (both the 200 and 503 paths, against the real handler — not a duplicate of its logic).
+**`.dockerignore`** (repo root) excludes `.git`, real `.env` files, tests, docs, the frontend, the extension, `ai/.venv`, `ai/models`, and every `__pycache__`/`node_modules`.
 
-## 4. Safe logging / error handling (already in place)
+**If Docker turns out not to fit a chosen host** (e.g. a bare VM without container tooling): `deploy/systemd/aitryon-backend.service` is the direct alternative — same `--workers 1 --proxy-headers` command, run against the same shared venv `docs/DEVELOPMENT.md` already documents, with `ProtectSystem=strict`/`NoNewPrivileges=true` hardening and an explicit `ReadWritePaths` for the storage volume. Neither is "the" answer — pick whichever matches the eventually-chosen GPU host's own deployment model (§14 notes this varies by provider).
 
-- Every unhandled exception (a genuine bug, not a `UserFacingError`/validation error) is caught by `CatchUnhandledExceptionsMiddleware` (`core/errors.py`), logged server-side with `logger.exception(...)` (full traceback in the server's own log), and returned to the client as a generic `{"detail": "An unexpected error occurred."}` — never a stack trace, path, or internal detail. Security headers still apply to this response (see the commit that fixed this from bypassing them entirely).
-- `UserFacingError` (the deliberate, expected error path — bad input, rate limit, etc.) always carries a safe, pre-written message; nothing derived from an exception's own `str()` ever reaches a response body outside that.
-- `logging.basicConfig(level=logging.INFO, ...)` in `main.py` — plain stdout/stderr logging, no structured/JSON logging. Deliberately not changed this milestone: this app has no log aggregator to target yet, and INFO is a reasonable default for both dev and prod. If a real deployment target needs structured logs (e.g. for a specific log-shipping pipeline), that's a genuine future change tied to *which* platform, not something to guess at speculatively now.
-- Password reset tokens, JWTs, and passwords are never logged — verified directly in the auth/password-reset test suites, not just by inspection.
+## 5. Process / worker configuration — **Implemented + documented**
 
-## 5. Database connection behavior (already in place)
+**This application must run as exactly one process per model-hosting instance** — not `uvicorn --workers N>1`, not multiple replicas sharing one GPU, without further architecture work:
 
-- One SQLAlchemy engine per process (`db/base.py`), `pool_pre_ping=True` — a connection that's gone stale (e.g. the DB restarted, a load balancer idle-timed-out the TCP connection) is detected and transparently replaced rather than surfacing as a confusing mid-request error.
-- Default pool sizing (SQLAlchemy's own defaults: 5 persistent + 10 overflow connections) was left unchanged — this is a single-worker-process app (see §12), and nothing in the current request volume/pattern indicated that default was wrong. Revisit only if real production load shows connection exhaustion.
-- **Migrations are not run automatically.** `alembic upgrade head` (from `backend/`) must be run before starting the server on a fresh database or after pulling a change that adds a migration. `alembic check` (used throughout this project's own audits) confirms there's no drift between `models.py` and the migration history before every deploy.
+- `SelfHostedVTONProvider` loads the full model into memory once per process and holds a single in-process lock enforcing "one generation at a time." A second worker would load a **second full copy of the model** and hold its **own independent lock** — two generations could run concurrently against what's usually one accelerator, the opposite of the intended behavior.
+- `CapacityService`/`QuotaService` are database-backed specifically so the *job count* stays correct across multiple workers if this ever changes — but they only bound how many jobs exist, not how many run genuinely concurrently, which only the provider's own in-process lock currently guarantees, and can't across processes.
+- `RateLimiter` is in-memory and process-local by design — more than one worker silently multiplies the effective rate limit by the worker count. Acceptable at one process; would need a shared backend (e.g. Redis) only if this app ever legitimately needs multiple workers, which it doesn't yet.
 
-## 6. Persistent storage requirements
-
-`AITRYON_STORAGE_DIR` (default `backend/storage`, two subdirectories: `tmp/` for in-flight uploads, `results/` for generated images) **must be a durable, persistent volume** in any real deployment — not ephemeral container storage that's wiped on restart/redeploy. A result a user explicitly saved (`JobRecord.saved`) is expected to survive process restarts and redeploys; losing it would be a real, user-visible data-loss bug, not just an inconvenience. If the deployment target is containerized, mount a persistent volume at this path (or point `AITRYON_STORAGE_DIR` at one) — this is infrastructure provisioning, not an application change, so it's not done here.
-
-## 7. Cleanup scheduler requirement
-
-`backend/scripts/cleanup_expired_results.py` already has a complete, tested, idempotent implementation (safe to run repeatedly, on any schedule, including overlapping runs) and a documented exit-code contract (`0` = clean sweep, `1` = at least one individual job's cleanup failed, so a scheduler can alert on it) — see the script's own module docstring for the full per-platform wiring instructions (cron, Windows Task Scheduler, a Kubernetes CronJob, a hosted cron add-on). **It is not scheduled anywhere in this repository** — no Dockerfile, no CI/CD, no process manager config exists yet (confirmed by inspection). This is the single most concrete "must wire up before real traffic accrues" item: without it, expired unsaved results and stale processing jobs only ever get cleaned up at the next app *restart* (the same sweep also runs once in `lifespan()`), not on any regular interval. Run it hourly (reasonable against the default 24h unsaved-result TTL) via whichever scheduler the eventual deployment target provides.
-
-## 8. Reverse-proxy / HTTPS requirements
-
-- **No HSTS header is sent, deliberately** (`core/security_headers.py`'s own docstring) — this repo has no reverse proxy or TLS termination yet, and sending HSTS over plain HTTP would be actively wrong, not just premature. Add it (or let the reverse proxy add it) only once HTTPS is genuinely and permanently in place.
-- **Body size limit should be mirrored at the proxy layer.** `AITRYON_MAX_REQUEST_BODY_BYTES` (25 MiB default) is application-level defense in depth, not a substitute for a proxy-level limit (e.g. nginx's `client_max_body_size`) — set the proxy's limit ≥ this one so it doesn't silently truncate a request this layer would otherwise reject cleanly with a proper `413`.
-- **Real client IPs need `--proxy-headers`.** Rate limiting, anonymous usage quota, and idempotency scoping all key on `request.client.host` — the literal TCP peer, never a trusted `X-Forwarded-For` (this app deliberately does not parse that header itself; doing so safely is the ASGI server's job, not application code's). Deployed directly behind a reverse proxy without any configuration, every request's `client.host` would be the proxy's own address, collapsing every real visitor into one shared rate-limit/quota bucket — a self-inflicted availability bug, not a security hole, but a real one. Fix at deploy time by starting uvicorn with `--proxy-headers --forwarded-allow-ips=<reverse proxy's IP>` (never `--forwarded-allow-ips='*'`, which would let any client spoof its own IP via the header). See §10 for the full command.
-
-## 9. CORS / frontend URL configuration
-
-Two independent settings, already correctly separated (not the same value used for two purposes):
-
-- `AITRYON_CORS_ORIGINS` — the list of origins allowed to *call* the API (browser CORS enforcement). Must be your real frontend origin(s), never `"*"` (startup-refused in production if it is).
-- `AITRYON_FRONTEND_BASE_URL` — the one origin the backend itself builds a user-facing URL against (password-reset email links). Must also be your real frontend origin, but not startup-validated (a stale value breaks a link, it doesn't open a vulnerability).
-- Frontend side: `VITE_API_BASE_URL` (build-time, `frontend/.env` or the hosting platform's env config) must point at the deployed backend's real URL.
-
-## 10. Production service startup command
-
-The documented dev command (`uvicorn backend.app.main:app --reload`) is dev-only — `--reload` watches the filesystem and adds overhead never wanted in production. A production start, from the repo root, with the venv's Python:
-
+Production start command (from the repo root, with the venv's Python — Dockerfile's `CMD` and `deploy/systemd/aitryon-backend.service` both use this same shape):
 ```
 <venv>/bin/python -m uvicorn backend.app.main:app \
   --host 0.0.0.0 --port 8000 \
   --workers 1 \
   --proxy-headers --forwarded-allow-ips=<reverse proxy's IP>
 ```
+`--workers 1` is not a placeholder. Scaling inference horizontally requires a real architecture change (a worker-process pool per accelerator, a shared lock/queue) — deliberately not built speculatively; see §1's topology discussion for where that would plug in.
 
-(Windows: `<venv>\Scripts\python.exe -m uvicorn ...`, same flags.) Omit `--proxy-headers`/`--forwarded-allow-ips` only if this process is *not* behind a reverse proxy at all. `--workers 1` is not a placeholder — see §12 for why this app must not run with more than one worker as currently architected. Run `alembic upgrade head` (from `backend/`) before the first start against a given database.
+## 6. Health / readiness check — **Implemented**
 
-## 11. Graceful shutdown
+`GET /health` runs a real `SELECT 1` against the database, returning `503 {"status": "error", "detail": "Database unreachable."}` if that fails, `200 {"status": "ok"}` otherwise. The AI model and storage directory don't need an equivalent per-request check — both already fail loudly at startup (§3), so if this process is answering at all, both are known-good for its entire lifetime. One endpoint, not a live/ready split — this app has no orchestrator yet that would consume the two differently. Tests: `tests/test_health_check.py`.
 
-`main.py`'s `lifespan()` now logs on the way out (`"AI Try-On backend shutting down."`) so a shutdown is visible in the logs rather than silent — the one gap found this milestone; fixed. No other shutdown cleanup was needed or added: a try-on job left `processing` by an abrupt shutdown (a SIGTERM grace period expiring mid-generation, or a hard kill) is already designed to self-heal — the next startup's `recover_stale_processing_jobs()` (or the scheduled cleanup sweep, §7) picks it up and marks it `failed`, matching `providers/selfhosted.py`'s own documented limitation that a genuinely in-progress generation cannot be safely force-stopped from within this process. Operationally: give the process a graceful-shutdown grace period (uvicorn's `--timeout-graceful-shutdown`, default 5s) short enough to be practical — a real generation can take minutes to hours on CPU, so no reasonable grace period will let one finish before a forced restart; that's expected and already handled by the recovery sweep, not a gap to close.
+## 7. Graceful shutdown — **Implemented**
 
-## 12. Worker / process considerations
+`lifespan()` logs on the way out. No other shutdown cleanup was needed: a job left `processing` by an abrupt shutdown self-heals via the stale-job recovery sweep at next startup (`services/job_recovery.py`), matching `providers/selfhosted.py`'s documented limitation that a genuinely in-progress generation can't be safely force-stopped. Give the process a short graceful-shutdown grace period (uvicorn's `--timeout-graceful-shutdown`, default 5s) — no reasonable grace period lets a real generation (minutes to hours) finish before a forced restart, and that's expected, handled by the recovery sweep, not a gap to close.
 
-**This application must run as exactly one process per model-hosting instance** — not `uvicorn --workers N>1`, not multiple replicas sharing one GPU/CPU, without further architecture work. Concretely:
+## 8. Safe logging / error handling — **Implemented**
 
-- `SelfHostedVTONProvider` loads the full model into memory once per process and holds a single in-process lock that enforces "one generation at a time." A second worker process would load a **second full copy of the model** (real memory cost) and hold its **own independent lock** — two generations could then run concurrently against what's usually one accelerator, which is the opposite of the intended behavior, not just a wasted resource.
-- `CapacityService` and `QuotaService` are both database-backed specifically so the *job count* stays correct across multiple workers if this ever changes — but they only bound how many jobs exist, not how many run genuinely concurrently, which is what the provider's own in-process lock is supposed to guarantee and can't, across processes.
-- `RateLimiter` (abuse-protection only, not quota) is in-memory and process-local by design (documented in `services/rate_limiter.py` and `api/auth.py`) — with more than one worker, each gets its own independent counters, so the effective rate limit is silently multiplied by the worker count. Acceptable today (single process); would need a shared backend (e.g. Redis) only if this app ever legitimately needs multiple workers, which it doesn't yet — not built speculatively.
+- Every unhandled exception is caught by `CatchUnhandledExceptionsMiddleware`, logged server-side with a full traceback, and returned to the client as `{"detail": "An unexpected error occurred."}` — never a stack trace or internal detail.
+- Passwords, JWTs, password-reset tokens, and SMTP credentials are never logged — verified directly in the auth/password-reset/email test suites (`tests/test_password_reset.py`'s `test_no_raw_token_reaches_application_logs`/`test_console_email_service_never_logs_the_raw_token`, `tests/test_email_service.py`'s `test_failure_log_never_contains_the_password_recipient_or_url`), not just by inspection. `SmtpEmailService` logs only an exception's *type* on a failed send, never `str(exception)` (which can echo back SMTP server/auth detail).
+- `logging.basicConfig(level=logging.INFO, ...)` — plain stdout/stderr, no structured/JSON logging and no verbose debug logging added for this milestone; INFO remains the right default until a real log-shipping target exists to justify a format change.
 
-If throughput ever genuinely requires more than one concurrent generation, that's a real architecture change (a separate worker-process pool per accelerator, a shared lock/queue), not a flag to flip — out of scope for this milestone, and not GPU-hosting/infrastructure work this task was meant to touch.
+## 9. Database — **Implemented + requires external infrastructure**
 
-## 13. Pre-deployment checklist
+- **Timestamps**: every `DateTime` column uses `DateTime(timezone=True)` (Postgres `timestamptz`) — confirmed by grep, zero naive-datetime usage anywhere in `backend/app`. Fixed and regression-tested in an earlier milestone (`tests/test_timestamp_timezone_handling.py`); unchanged and reverified this milestone.
+- **Connection pooling**: one SQLAlchemy engine per process (`db/base.py`), `pool_pre_ping=True` — confirmed still present. A stale connection (DB restart, an idle-timed-out proxy connection) is detected and transparently replaced. Default pool sizing (SQLAlchemy's own: 5 persistent + 10 overflow) is unchanged — this is a single-process app (§5); revisit only if real load shows exhaustion.
+- **Schema is never auto-created**: confirmed by grep — `Base.metadata.create_all()` is never called anywhere in `backend/app`. Every table exists only because a migration created it. `alembic upgrade head` (from `backend/`) must be run explicitly before first start against a fresh database, and after pulling any commit that adds a migration — this application will never do it for you, in a container or otherwise (see §4's separate `docker run ... alembic upgrade head` step).
+- **Migration-state discipline**: `alembic check` (used throughout this project's own milestones) confirms zero drift between `models.py` and the migration history before every deploy — wire it into CI (§16) and re-run it manually before any production deploy as a final gate.
+- **Requires external infrastructure**: a real, durable, backed-up (§15) PostgreSQL 17-compatible server — this repository provisions none.
 
-Application-side only — does not include provisioning the GPU host or payments (both explicitly deferred, see project scope). Real email delivery is no longer deferred — see below.
+## 10. Persistent storage — **Implemented + requires operator configuration**
+
+`AITRYON_STORAGE_DIR` (two subdirectories: `tmp/` for in-flight uploads, `results/` for generated images) **must be a durable, persistent volume**, never ephemeral container storage wiped on restart/redeploy — a result a user explicitly saved (`JobRecord.saved`) is expected to survive both.
+
+- **Permissions**: the Dockerfile's runtime user (`aitryon`, non-root) must own this path — the image creates and `chown`s `/app/backend/storage` itself, but a bind-mounted host directory must be pre-created with matching ownership, or the container's own `chown` at build time won't apply to it. For `deploy/systemd/aitryon-backend.service`, `ReadWritePaths` must point at wherever `AITRYON_STORAGE_DIR` (in the referenced `EnvironmentFile`) actually resolves, owned by that unit's `User=`.
+- **Cleanup behavior**: `tmp/` entries are deleted the moment their job finishes (success, failure, or cancellation — `TryOnService.run_job`'s `finally` block); `results/` entries older than `AITRYON_UNSAVED_RESULT_TTL_HOURS` and never explicitly saved are deleted by the cleanup sweep (§11), not on any other schedule.
+- Object storage (S3-compatible or similar) was deliberately not introduced this milestone — the existing `StorageService` interface (`services/storage.py`) already abstracts this exactly the way `VirtualTryOnProvider` abstracts the model, so a future `S3StorageService` is a new implementation behind the same interface whenever real scale genuinely needs it, not a speculative addition now.
+
+## 11. Cleanup scheduler — **Deployment-ready**
+
+`backend/scripts/cleanup_expired_results.py` already has a complete, tested, idempotent implementation (safe to run repeatedly or overlapping — see the script's own module docstring) doing all three required things in one run: stale-`PROCESSING`-job recovery, expired-unsaved-result + leftover-temp-file deletion, and expired/used password-reset-token cleanup. Exit code `0` = clean sweep, `1` = at least one individual job's cleanup failed (never affected by *how many* jobs were cleaned, only by errors) — logged safely (job IDs and counts only, never file contents/tokens/credentials).
+
+**New this milestone**: `deploy/systemd/aitryon-cleanup.service` + `.timer` — an hourly systemd timer (reasonable against the default 24h unsaved-result TTL and 120-minute stale-job threshold), chosen as the smallest reliable mechanism for a systemd-based host already running `aitryon-backend.service` (free logging via `journalctl`, no extra package). A plain cron entry is an equally valid, slightly more minimal alternative on a host that doesn't otherwise use systemd:
+```
+0 * * * *  cd /opt/aitryon && ai/.venv/bin/python backend/scripts/cleanup_expired_results.py >> /var/log/aitryon-cleanup.log 2>&1
+```
+For a container deployment, either the orchestrator's own scheduler (e.g. a Kubernetes `CronJob` running the same image with `docker run`'s entrypoint overridden to this script) or a host-level systemd timer calling `docker exec` into the running backend container works equally well — neither is provided as a file here since it depends on which orchestrator, if any, is eventually chosen.
+
+Install: `systemctl daemon-reload && systemctl enable --now aitryon-cleanup.timer`. Verify it actually runs: `systemctl list-timers aitryon-cleanup.timer`.
+
+## 12. Reverse proxy / HTTPS — **Deployment-ready + requires external infrastructure**
+
+- **No HSTS is sent by the application, deliberately** (`core/security_headers.py`'s own docstring) — sending it before HTTPS is genuinely, permanently in place would be actively wrong. `deploy/nginx/aitryon.example.conf` includes the HSTS directive **commented out**, with an explicit note to enable it only once TLS is confirmed working end to end.
+- **Body size limit mirrored at the proxy layer**: the example config sets `client_max_body_size 26M`, matching (slightly above) `AITRYON_MAX_REQUEST_BODY_BYTES`'s 25 MiB default — keep the two aligned if that setting ever changes.
+- **Real client IPs**: `deploy/nginx/aitryon.example.conf` sets `X-Forwarded-For`/`X-Real-IP`/`X-Forwarded-Proto`; the backend must be started with the matching `--proxy-headers --forwarded-allow-ips=<this proxy's IP>` (§5) — never `--forwarded-allow-ips='*'`. Without both sides configured, rate limiting/anonymous quota/idempotency scoping all silently collapse onto the proxy's own IP.
+- **No WebSocket configuration** — this app has no WebSocket/SSE usage anywhere (job status is plain HTTP polling); `deploy/nginx/aitryon.example.conf` deliberately has no `Upgrade`/`Connection: upgrade` directives. Add them only if a future milestone genuinely introduces persistent-connection traffic.
+- **Requires external infrastructure**: a real domain and a real TLS certificate (e.g. via Let's Encrypt/certbot, referenced but not obtained by the example config) — neither exists yet.
+
+## 13. CORS / frontend URL configuration — **Implemented + requires operator configuration**
+
+- `AITRYON_CORS_ORIGINS` — origins allowed to *call* the API. Must be the real frontend origin(s); never `"*"` (refused in production, §2). Confirmed the check also catches a wildcard mixed with real origins, not just a bare `"*"` (`tests/test_config_validation.py`).
+- `AITRYON_FRONTEND_BASE_URL` — the one origin the backend builds a user-facing (password-reset) URL against. Separate setting, same real value in practice, not startup-validated (a stale value breaks a link, not a vulnerability).
+- `VITE_API_BASE_URL` (frontend build-time) must point at the real deployed backend URL.
+- Localhost is never required for production — both backend settings default to the local dev origin purely so a fresh checkout works out of the box; neither has any dependency on `localhost` remaining reachable once real values are set.
+
+## 14. GPU deployment — **Measured baseline recorded; no provider chosen**
+
+**Real measurement** (Google Colab, Tesla T4 — not an estimate):
+
+| | Measured |
+|---|---|
+| GPU | Tesla T4, 15,360 MiB total VRAM |
+| dtype actually used | `torch.bfloat16` (device `cuda:0`) |
+| Generation time, 30 timesteps | 474.64s (7.91 min) |
+| PyTorch peak allocated | 10,916.7 MiB |
+| PyTorch peak reserved | 11,880 MiB |
+| `nvidia-smi` total used | 14,745 MiB / 15,360 MiB |
+| Free memory measured | 168 MiB |
+| DWPose warm inference | 0.109s |
+
+**A T4 is explicitly not recommended as sufficient for production**, despite technically completing the workload: 168 MiB free out of 15,360 MiB is essentially zero safety margin. A production service needs headroom for image-size variation (up to the application's own 4096px cap), PyTorch memory fragmentation across many sequential generations without a process restart, and CUDA/framework overhead beyond the main model's own tensors (the ~2.87GB gap between PyTorch's own 11,880 MiB "reserved" figure and `nvidia-smi`'s 14,745 MiB total is exactly that overhead — DWPose's `onnxruntime-gpu` allocation, CUDA context, driver bookkeeping). A single unlucky request could plausibly OOM the whole process.
+
+Also worth noting as a real discrepancy, not smoothed over: `ai/vendor/fashn-vton-1.5/README.md` states bf16 requires an Ampere-or-newer GPU (RTX 30xx/40xx, A10G, L4, A100/H100) and that older hardware falls back to `float32`. The T4 is Turing (pre-Ampere), yet the real benchmark measured `torch.bfloat16` actually in use. This project trusts the **measurement** over the README's general claim — current PyTorch versions may support bf16 arithmetic more broadly than the README's original assumption — but flags the discrepancy explicitly rather than silently picking one source as correct.
+
+**Engineering estimate, clearly distinguished from the measurement above, not purchased or committed to**: given the T4's ~14.7GB actual usage leaves no margin, a GPU class with materially more headroom — 24GB (RTX 4090, A10G, L4, RTX 3090) — is the recommended minimum practical production class, not because bf16 requires it (the T4 measurement contradicts that), but because 24GB leaves a real, defensible safety margin (~9GB) over the measured ~14.7GB working set. This is an estimate pending a real measurement on a 24GB card, not a second verified data point.
+
+**No GPU host, provider, or instance has been chosen or purchased** — see the project's own earlier GPU-hosting-planning work for a comparison of hosting *approaches* (on-demand/dedicated/serverless), all still compatible with the in-process topology chosen in §1. The AI provider abstraction (§1) keeps this decision reversible: whichever host is eventually chosen just needs to run this same `Dockerfile` (§4) or the systemd alternative with a GPU attached — no application code depends on which one.
+
+## 15. Backups — **Documented, not implemented**
+
+No backup currently exists — this section documents the minimum requirement, it does not claim one is running.
+
+- **PostgreSQL**: the single source of truth for users, jobs, plans, and reset tokens. Minimum: automated daily `pg_dump` (or the hosting provider's managed-backup equivalent, e.g. RDS/Cloud SQL automated snapshots) retained for a documented window (a start: 7 daily + 4 weekly), stored somewhere other than the database host itself. Untested backups are not backups — a restore drill belongs in the same runbook that sets this up, not assumed to work.
+- **Persistent result storage** (`AITRYON_STORAGE_DIR`'s `results/` subtree): lower priority than the database by design — unsaved results are *already* meant to be temporary (§10's TTL), so only explicitly-**saved** results represent real, expected-to-persist user data worth backing up. A volume-level snapshot (matching whatever the chosen storage backend/cloud provider offers) on the same cadence as the database backup is sufficient; this repository doesn't implement or schedule one.
+- **Recovery expectation**: restoring the database without the storage volume (or vice versa) leaves `JobRecord.saved=True` rows pointing at missing files, or orphaned files with no owning row — restore both together, from backups taken close together in time, not independently.
+
+## 16. CI/CD — **Deployment-ready**
+
+`.github/workflows/ci.yml` — two jobs, both test-only, **no deploy step**:
+- **backend**: a Postgres 17 service container, the same AI-pipeline dependency install sequence as §4/local dev (CPU torch — no GPU in CI, and none needed: every test that would otherwise require a real model injects a fake provider instead — confirmed by inspection of `backend/app/providers/base.py`'s test-only injection point before leaving weight download out of CI entirely), `alembic upgrade head` against the CI database, `alembic check`, then the full `pytest` suite.
+- **frontend**: `npm ci`, the full Vitest suite, `npm run build`, `npm run lint`.
+
+Runs on every push/PR to `master`. **Not verified by an actual GitHub Actions run** — no `gh`/GitHub access was available in the environment that wrote it; reviewed carefully against this repo's own documented install sequence and existing test conventions, but an operator should watch the first real run before trusting it fully.
+
+## 17. Pre-production smoke test — **Deployment-ready, verified working**
+
+`deploy/smoke_test.py` — exercises a **real, running instance** end to end over the network (distinct from the pytest suite's in-process `TestClient`): health, CORS (both a disallowed and, if given, the configured origin), request body-size rejection, signup, login, password-reset request (enumeration-safety), try-on submission + status polling + cross-user ownership rejection + result-endpoint sanity, admin-access refusal for a non-admin account, and account deletion (including confirming the token stops working immediately after). Creates and deletes two throwaway accounts of its own; never waits for a real AI generation to finish (§14's benchmark: minutes on GPU, potentially over an hour on CPU) — it confirms submission and polling work, not full generation.
+
+**Actually run against the real local backend during this milestone** (not just written): all checks passed. Usage:
+```
+ai\.venv\Scripts\python.exe deploy\smoke_test.py --base-url http://localhost:8000
+ai\.venv\Scripts\python.exe deploy\smoke_test.py --base-url https://your-deployment.example.com --cors-origin https://your-frontend.example.com
+```
+Not run by CI (§16) — it needs a fully running instance including the real AI pipeline, which CI deliberately never boots.
+
+## 18. Secrets / required production configuration — **Reference list**
+
+Every value below either must be set for production, or is a secret that must never be committed. See [ENVIRONMENT.md](ENVIRONMENT.md) for defaults and full descriptions.
+
+| Category | Variable(s) | Secret? |
+|---|---|---|
+| Environment | `AITRYON_ENVIRONMENT=production` | No |
+| Auth | `AITRYON_JWT_SECRET_KEY` | **Yes** |
+| Database | `AITRYON_DATABASE_URL` (embeds the DB password) | **Yes** |
+| Email | `AITRYON_EMAIL_PROVIDER=smtp`, `AITRYON_SMTP_HOST`/`_PORT`/`_USERNAME`, `AITRYON_EMAIL_FROM_ADDRESS`/`_FROM_NAME` | No |
+| Email | `AITRYON_SMTP_PASSWORD` | **Yes** |
+| Frontend URLs | `AITRYON_CORS_ORIGINS`, `AITRYON_FRONTEND_BASE_URL`, `VITE_API_BASE_URL` (frontend build) | No |
+| Storage | `AITRYON_STORAGE_DIR` (a persistent volume path, §10) | No |
+| Inference | `AITRYON_WEIGHTS_DIR`, `AITRYON_DEVICE=cuda`, `AITRYON_INFERENCE_TIMEOUT_SECONDS` (lower substantially from the CPU-sized 3600s default once real GPU timing is known, §14) | No |
+
+Never committed anywhere in this repository (`.env` is gitignored; only `.env.example`, placeholders only, is tracked). No default production credential exists for any of the above — `check_production_secrets`/`check_production_email_provider` (§2) exist specifically so a forgotten secret fails startup instead of silently running insecurely.
+
+## 19. Pre-deployment checklist
 
 - [ ] `AITRYON_ENVIRONMENT=production` set
-- [ ] `AITRYON_JWT_SECRET_KEY` generated fresh (`secrets.token_hex(32)`), not the dev default
-- [ ] `AITRYON_DATABASE_URL` points at the real production database, not the dev credential
-- [ ] `AITRYON_CORS_ORIGINS` set to the real frontend origin(s), not `"*"`, not the localhost default
+- [ ] `AITRYON_JWT_SECRET_KEY` generated fresh, not the dev default
+- [ ] `AITRYON_DATABASE_URL` points at the real production database
+- [ ] `AITRYON_CORS_ORIGINS` set to the real frontend origin(s), not `"*"`
 - [ ] `AITRYON_FRONTEND_BASE_URL` set to the real frontend origin
-- [ ] `AITRYON_EMAIL_PROVIDER=smtp`, with `AITRYON_SMTP_HOST`/`AITRYON_EMAIL_FROM_ADDRESS` (and, for almost every real provider, `AITRYON_SMTP_USERNAME`/`AITRYON_SMTP_PASSWORD`) set — the app refuses to start otherwise (`Settings.check_production_email_provider`); see [ENVIRONMENT.md](ENVIRONMENT.md)'s "Email delivery" section
-- [ ] `AITRYON_STORAGE_DIR` points at a durable, persistent volume
+- [ ] `AITRYON_EMAIL_PROVIDER=smtp` with `AITRYON_SMTP_*`/`AITRYON_EMAIL_FROM_*` set
+- [ ] `AITRYON_STORAGE_DIR` points at a durable, persistent, correctly-owned volume (§10)
 - [ ] `alembic upgrade head` run against the production database
-- [ ] `alembic check` run and clean (no drift) before every deploy going forward
-- [ ] `backend/scripts/cleanup_expired_results.py` wired into a real scheduler (cron/Task Scheduler/CronJob/hosted cron), running at least hourly
-- [ ] Reverse proxy in front of the app terminates TLS and adds HSTS
-- [ ] Reverse proxy's own body-size limit set ≥ `AITRYON_MAX_REQUEST_BODY_BYTES`
-- [ ] uvicorn started with `--proxy-headers --forwarded-allow-ips=<proxy IP>` if behind a reverse proxy (never `--forwarded-allow-ips='*'`)
-- [ ] uvicorn started with `--workers 1` (see §12 — do not scale workers without an architecture change)
-- [ ] `GET /health` returns `200` against the real deployment before routing real traffic to it
-- [ ] `VITE_API_BASE_URL` (frontend build) points at the real deployed backend URL
+- [ ] `alembic check` clean before this and every future deploy
+- [ ] Cleanup scheduler installed and confirmed running (§11)
+- [ ] Reverse proxy terminates real TLS, adds HSTS only after confirming TLS works, mirrors the body-size limit (§12)
+- [ ] `--proxy-headers --forwarded-allow-ips=<proxy IP>` set on the backend (never `'*'`)
+- [ ] `--workers 1` (§5 — do not scale workers without an architecture change)
+- [ ] `GET /health` returns `200` against the real deployment
+- [ ] `VITE_API_BASE_URL` (frontend build) points at the real deployed backend
+- [ ] `deploy/smoke_test.py` run against the real deployment and passes (§17)
+- [ ] Database + storage backup mechanism actually running, not just documented (§15)
+- [ ] Docker image (or systemd alternative) build/run actually verified against a real GPU host (§4 — not yet done)
 
-Deliberately not on this list, tracked separately per the project's own scope rules: GPU hosting provisioning, payments/subscriptions.
+Deliberately not on this list, out of scope per the project's own rules: GPU hosting purchase, payments/subscriptions, actually deploying.

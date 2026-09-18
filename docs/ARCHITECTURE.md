@@ -29,6 +29,8 @@ The development machine (Windows, AMD integrated GPU, no CUDA) cannot run diffus
 
 Both environments run the exact same `SelfHostedVTONProvider` code; only the hardware backing PyTorch differs (`device="cpu"` vs `device="cuda"`).
 
+**Real GPU measurement, not an estimate** (Google Colab, Tesla T4, 30 timesteps): 474.64s generation time, `torch.bfloat16` actually in use, `nvidia-smi` reporting 14,745 MiB of the T4's 15,360 MiB total in use (168 MiB free) — see `docs/DEPLOYMENT.md`'s GPU deployment section for the full figures and why a T4 specifically is not recommended as the production class despite technically completing the workload. This also chose the initial deployment topology (see `docs/DEPLOYMENT.md`'s Deployment architecture section): `SelfHostedVTONProvider` stays in-process rather than moving behind a separate GPU worker service — the `VirtualTryOnProvider` interface already keeps that reversible later without any changes here.
+
 ## Monetization-ready shape (Milestones 6 + 11)
 
 ```
