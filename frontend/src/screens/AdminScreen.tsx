@@ -3,6 +3,7 @@ import {
   disableAdminUser,
   enableAdminUser,
   getAdminDashboard,
+  listAdminAuditLog,
   listAdminJobs,
   listAdminPlans,
   listAdminUsers,
@@ -10,7 +11,7 @@ import {
 } from "../api/adminClient";
 import { ApiError } from "../api/http";
 import { useDialogA11y } from "../hooks/useDialogA11y";
-import type { AdminDashboard, AdminJobSummary, AdminPlan, AdminUserSummary } from "../types/admin";
+import type { AdminAuditLogEntry, AdminDashboard, AdminJobSummary, AdminPlan, AdminUserSummary } from "../types/admin";
 
 // Applies to both the users and jobs tabs -- neither exposes a page-size
 // control (not asked for), only Previous/Next over a fixed page size.
@@ -21,8 +22,18 @@ interface AdminScreenProps {
   onClose: () => void;
 }
 
-type Tab = "dashboard" | "users" | "jobs" | "plans";
-const TABS: Tab[] = ["dashboard", "users", "jobs", "plans"];
+type Tab = "dashboard" | "users" | "jobs" | "plans" | "audit";
+const TABS: Tab[] = ["dashboard", "users", "jobs", "plans", "audit"];
+// Every other tab's button label is just its own id (styled via the
+// `capitalize` class below) -- "audit" alone needs a real label since
+// its id is a single word standing in for "audit log."
+const TAB_LABELS: Record<Tab, string> = {
+  dashboard: "dashboard",
+  users: "users",
+  jobs: "jobs",
+  plans: "plans",
+  audit: "audit log",
+};
 
 function genericErrorMessage(err: unknown): string {
   return err instanceof ApiError ? err.message : "Something went wrong. Please try again.";
@@ -62,7 +73,7 @@ export default function AdminScreen({ authToken, onClose }: AdminScreenProps) {
               tab === t ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-600"
             }`}
           >
-            {t}
+            {TAB_LABELS[t]}
           </button>
         ))}
       </nav>
@@ -71,6 +82,7 @@ export default function AdminScreen({ authToken, onClose }: AdminScreenProps) {
       {tab === "users" && <UsersTab authToken={authToken} />}
       {tab === "jobs" && <JobsTab authToken={authToken} />}
       {tab === "plans" && <PlansTab authToken={authToken} />}
+      {tab === "audit" && <AuditLogTab authToken={authToken} />}
     </div>
   );
 }
@@ -720,6 +732,195 @@ function PlanEditModal({
           </button>
         </form>
       </div>
+    </div>
+  );
+}
+
+const AUDIT_TARGET_TYPES = ["user", "plan"];
+
+/** Details are pre-filtered safe by the backend before this ever reaches
+ * the client (see db/models.py's AdminAuditLog docstring / GET
+ * /api/admin/audit-log) -- this only has to render whatever safe
+ * key/value pairs come back, never decide what's safe itself. Wrapped
+ * with break-all rather than scrolled, so a long value (e.g. an email
+ * in a user_disabled entry) can't force horizontal overflow on a narrow
+ * screen the way an unwrapped <pre> block would. */
+function AuditDetails({ details }: { details: Record<string, unknown> }) {
+  const entries = Object.entries(details);
+  if (entries.length === 0) {
+    return <span className="text-xs text-slate-400">—</span>;
+  }
+  return (
+    <dl className="flex max-w-[260px] flex-col gap-0.5 text-xs text-slate-500">
+      {entries.map(([key, value]) => (
+        <div key={key} className="flex gap-1">
+          <dt className="shrink-0 font-medium text-slate-400">{key}:</dt>
+          <dd className="break-all">{typeof value === "object" ? JSON.stringify(value) : String(value)}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+/** Read-only viewer for GET /api/admin/audit-log (backend/app/api/admin.py)
+ * -- no new endpoint needed, the one from the previous Admin/Ops milestone
+ * already supports everything this tab needs: pagination (same
+ * limit/offset convention as Users/Jobs) and target_type/target_id
+ * filters. admin_user_id is shown as-is (no email -- the API doesn't join
+ * one, see AdminAuditLogEntry's own comment in types/admin.ts) with
+ * "System" for the two cases it's null: the promote_admin.py bootstrap
+ * script (no HTTP admin session exists yet) and a later-deleted admin
+ * account (ON DELETE SET NULL preserves the entry, not the actor). */
+function AuditLogTab({ authToken }: { authToken: string }) {
+  const [targetType, setTargetType] = useState("");
+  const [targetId, setTargetId] = useState("");
+  const [targetIdInput, setTargetIdInput] = useState("");
+  const [offset, setOffset] = useState(0);
+  const [state, setState] = useState<LoadState<{ entries: AdminAuditLogEntry[]; total: number }>>({
+    status: "loading",
+  });
+
+  const load = useCallback(
+    (type: string, id: string, pageOffset: number) => {
+      setState({ status: "loading" });
+      listAdminAuditLog(authToken, {
+        targetType: type || undefined,
+        targetId: id || undefined,
+        limit: PAGE_SIZE,
+        offset: pageOffset,
+      })
+        .then((res) => {
+          setOffset(pageOffset);
+          setState({ status: "ready", entries: res.entries, total: res.total });
+        })
+        .catch((err) => setState({ status: "error", message: genericErrorMessage(err) }));
+    },
+    [authToken],
+  );
+
+  useEffect(() => {
+    load("", "", 0);
+  }, [load]);
+
+  const handleTargetTypeChange = (value: string) => {
+    setTargetType(value);
+    load(value, targetId, 0); // a new filter always starts back at page 1
+  };
+
+  const handleTargetIdSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    setTargetId(targetIdInput);
+    load(targetType, targetIdInput, 0);
+  };
+
+  const handlePrevPage = () => load(targetType, targetId, Math.max(0, offset - PAGE_SIZE));
+  const handleNextPage = () => load(targetType, targetId, offset + PAGE_SIZE);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-end gap-2">
+        <div className="flex items-center gap-2">
+          <label htmlFor="audit-target-type" className="text-sm font-medium text-slate-700">
+            Target type
+          </label>
+          <select
+            id="audit-target-type"
+            value={targetType}
+            onChange={(e) => handleTargetTypeChange(e.target.value)}
+            className="min-h-11 rounded-lg border border-slate-200 px-3 text-sm"
+          >
+            <option value="">All</option>
+            {AUDIT_TARGET_TYPES.map((t) => (
+              <option key={t} value={t}>
+                {t.charAt(0).toUpperCase() + t.slice(1)}
+              </option>
+            ))}
+          </select>
+        </div>
+        <form onSubmit={handleTargetIdSubmit} className="flex gap-2">
+          <label htmlFor="audit-target-id" className="sr-only">
+            Filter by target ID
+          </label>
+          <input
+            id="audit-target-id"
+            type="text"
+            placeholder="Target ID"
+            value={targetIdInput}
+            onChange={(e) => setTargetIdInput(e.target.value)}
+            className="min-h-11 rounded-lg border border-slate-200 px-3 py-2.5 text-sm"
+          />
+          <button type="submit" className="min-h-11 rounded-lg bg-indigo-600 px-4 text-sm font-semibold text-white">
+            Filter
+          </button>
+        </form>
+      </div>
+
+      {state.status === "loading" && (
+        <p role="status" className="text-sm text-slate-500">
+          Loading audit log…
+        </p>
+      )}
+      {state.status === "error" && (
+        <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+          {state.message}
+        </p>
+      )}
+      {state.status === "ready" && state.entries.length === 0 && (
+        <p className="text-sm text-slate-500">No audit log entries found.</p>
+      )}
+      {state.status === "ready" && state.entries.length > 0 && (
+        <>
+          <div className="overflow-x-auto">
+            <table aria-label="Audit log" className="w-full min-w-[720px] text-left text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 text-xs font-semibold uppercase text-slate-500">
+                  <th scope="col" className="py-2 pr-3">
+                    Timestamp
+                  </th>
+                  <th scope="col" className="py-2 pr-3">
+                    Admin
+                  </th>
+                  <th scope="col" className="py-2 pr-3">
+                    Action
+                  </th>
+                  <th scope="col" className="py-2 pr-3">
+                    Target
+                  </th>
+                  <th scope="col" className="py-2">
+                    Details
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {state.entries.map((entry) => (
+                  <tr key={entry.id} className="border-b border-slate-100 align-top">
+                    <td className="whitespace-nowrap py-2 pr-3">{new Date(entry.created_at).toLocaleString()}</td>
+                    <td className="py-2 pr-3">{entry.admin_user_id ?? "System"}</td>
+                    <td className="py-2 pr-3">
+                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-700">
+                        {entry.action}
+                      </span>
+                    </td>
+                    <td className="py-2 pr-3">
+                      {entry.target_type}: {entry.target_id}
+                    </td>
+                    <td className="py-2">
+                      <AuditDetails details={entry.details} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <PaginationControls
+            offset={offset}
+            count={state.entries.length}
+            total={state.total}
+            onPrev={handlePrevPage}
+            onNext={handleNextPage}
+          />
+        </>
+      )}
     </div>
   );
 }

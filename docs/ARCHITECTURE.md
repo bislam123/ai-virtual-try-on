@@ -73,24 +73,28 @@ What an account actually unlocks today: a job submitted while signed in is attri
 
 ## Admin / Operations (2026-09-19)
 
-A minimal, server-authoritative admin area for operating the application safely before real deployment — not a new subsystem: it's a read-mostly view over the existing `User`/`Plan`/`JobRecord` tables, plus one write action (enable/disable an account), all behind one new authorization gate.
+A minimal, server-authoritative admin area for operating the application safely before real deployment — not a new subsystem: it's a read-mostly view over the existing `User`/`Plan`/`JobRecord` tables, plus a small set of narrow, audited write actions (enable/disable an account, edit an existing plan's limits), all behind one new authorization gate.
 
 ```
 users.is_admin (bool, default false) ──▶ get_current_admin_user (composes on get_current_user_required)
                                                    │
                                                    ▼
-                                        /api/admin/* (7 routes, one router-level dependency)
+                                        /api/admin/* (9 routes, one router-level dependency)
                                                    │
                                                    ▼
                                         AdminService (plain SQLAlchemy queries, same
                                         shape as QuotaService/CapacityService)
+                                                   │
+                                                   ▼ (disable/enable, plan edits only)
+                                        admin_audit_log (append-only, same DB transaction
+                                        as the mutation it records)
 ```
 
 **Authorization model**: `users.is_admin` and `users.is_active` (migration `e94aa22bee59`) — two booleans, not a roles table or a separate admin-users table, because this app has exactly one privilege tier above "normal user" today. `auth/dependencies.py`'s `get_current_admin_user` composes on the existing `get_current_user_required` (so an unauthenticated request gets the exact same 401 every other protected endpoint gives) and adds one check: 403 if the authenticated user's `is_admin` is false. Applied once, at the `/api/admin` router level (`dependencies=[Depends(get_current_admin_user)]`) — no individual route re-checks `is_admin` itself, the same "one shared gate, not reimplemented per-route" pattern the job-ownership model already established (`TryOnService.get_job_for_viewer`/`cancel_job`/`save_job`). `is_admin` is never accepted from any request body — no signup/login schema has such a field — so there is no API path that can ever grant it.
 
 **`is_active`**: lets an admin disable an account without deleting it. Checked in `get_current_user_optional` alongside the existing `auth_version` comparison, so disabling revokes a live session immediately (not just future logins) — the same fail-closed pattern, not a second mechanism. `login()` rejects a disabled account with the exact same generic "Incorrect email or password." message a wrong password gets, so account status is never a new enumeration channel. An admin cannot disable their own account (a guarded 400, avoiding a self-lockout that would need direct DB access to undo).
 
-**First-admin bootstrap — deliberately out-of-band, not an API call**: an account becomes admin only via a direct database write, by whoever already has database access — the exact same trust boundary this project already relies on for editing `plans` rows by hand (see Milestone 11 below). Two ways to do it, both requiring the target account to have already signed up normally:
+**First-admin bootstrap — deliberately out-of-band, not an API call**: an account becomes admin only via a direct database write, by whoever already has database access — the same trust boundary a `plans` row edit used to require exclusively before `POST /plans/{name}` existed (see "API surface" below), and which reassigning a user's own plan (`users.plan`) still requires today (see Milestone 11 in `docs/DEVELOPMENT.md`). Two ways to do it, both requiring the target account to have already signed up normally:
 
 ```powershell
 # Convenience script (backend/scripts/promote_admin.py):
@@ -106,18 +110,22 @@ No default admin account is created by the migration, the script, or anything el
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /users` | Paginated list, optional `?search=` (email substring) |
+| `GET /users` | Paginated list, optional `?search=` (email substring). `?limit=`/`?offset=` (default 50, max 200) — the response echoes both back alongside `total`, so a client never has to separately track what it last requested |
 | `GET /users/{id}` | Full detail including usage/quota (reuses `QuotaService.get_status` — the exact same call `GET /api/usage/me` makes for a user's own account, not reimplemented) |
-| `POST /users/{id}/disable` / `/enable` | Toggles `is_active`; self-disable refused |
+| `POST /users/{id}/disable` / `/enable` | Toggles `is_active`; self-disable refused; writes an `admin_audit_log` entry (see below) |
 | `GET /plans` | Read-only list of configured plans and their limits — no payment/billing logic |
-| `GET /jobs` | Paginated, optional `?status=`/`?user_id=` filters, across *every* user — the one intentional exception to normal job-ownership scoping, gated by the same admin check everything else here uses |
+| `POST /plans/{name}` | Edits an *existing* plan's three limit fields (`max_generations_per_day`/`_per_month`/`max_num_timesteps`) — never creates or deletes a plan. `max_num_timesteps` is rejected (422) outside this deployment's own `AITRYON_MIN_NUM_TIMESTEPS`/`AITRYON_MAX_NUM_TIMESTEPS` range. Writes an `admin_audit_log` entry recording both the before and after values (plan limits are plain integers, never a secret, so the full before/after is safe to keep) |
+| `GET /jobs` | Paginated (same `?limit=`/`?offset=` convention as `/users`), optional `?status=`/`?user_id=` filters, across *every* user — the one intentional exception to normal job-ownership scoping, gated by the same admin check everything else here uses |
+| `GET /audit-log` | Paginated, optional `?target_type=`/`?target_id=` filters — see "Persistent admin audit log" below |
 | `GET /dashboard` | `total_users`, `active_users`, `jobs_by_status`, `recent_failed_jobs`, `active_job_count`/`max_active_job_capacity` (reuses `CapacityService`'s own configured limit), and `avg_processing_duration_seconds` computed from a bounded recent sample of completed jobs' own `created_at`/`updated_at` — no new timing instrumentation added anywhere in the inference path |
 
 **What every admin response deliberately excludes**: `password_hash`, `auth_version`, reset-token hashes, JWTs, and (on the job list specifically) the associated user's email — jobs carry only `user_id`, cross-referenced via the user endpoints if needed, not re-embedded. Regression-tested directly (`tests/test_admin_api.py::test_no_sensitive_auth_fields_in_any_admin_response`), not just reasoned about.
 
-**Frontend**: `AdminScreen.tsx`, reachable only via an "Admin" button in `AuthBar` that itself only renders when `user.is_admin` is true (read from `GET /api/auth/me`, display-only — every admin API call the screen makes is independently re-authorized server-side regardless of what the client believes, so a stale or spoofed client-side flag can't grant anything real). No router exists in this app (same as the password-reset/extension-handoff screens); `AdminScreen` is a local `App.tsx` state branch, the established pattern here.
+**Persistent admin audit log (2026-09-20)**: `admin_audit_log` (migration `e1f5538acd61`) records every mutation this API can perform — `user_disabled`/`user_enabled`/`plan_updated`, plus `admin_promoted` from the out-of-band bootstrap script below — as `{admin_user_id, action, target_type, target_id, details, created_at}`. Written inside the *same* `get_session()` transaction as the mutation itself (`services/admin_service.py`'s `record_admin_audit_log`), so a failure writing the audit row rolls the mutation back too rather than the two ever disagreeing, and any such failure surfaces through the ordinary `CatchUnhandledExceptionsMiddleware` generic-500 path — never a raw exception detail. `details` is deliberately restricted to safe, non-secret context (an affected email address, a plan's before/after limits) — reviewed at every call site, never a password/JWT/reset-token/other credential. `admin_user_id` is a nullable FK with `ON DELETE SET NULL`, not `CASCADE`: deleting the acting admin's own account later must not delete the historical record of what they did. It's also `NULL` for `admin_promoted`, since that action has no HTTP-authenticated admin session to attribute it to at all. **Access control**: `GET /audit-log` sits behind the exact same router-level `get_current_admin_user` dependency as every other route here — no separate gate, no new authorization concept. Regression-tested (`tests/test_admin_api.py`, `tests/test_promote_admin.py`): entries are written correctly, survive the acting admin's own account deletion, never leak a sensitive field, and an audit-write failure both rolls back the mutation and never leaks internal exception detail to the client.
 
-**Deliberately not built**: no audit log of admin actions (two actions exist — disable/enable — and both are already visible as the account's own `is_active` state; a dedicated log was judged unnecessary infrastructure for this milestone's scope). No bulk actions, no plan-editing UI (plans stay a direct-DB-edit operation, unchanged from Milestone 11), no payment/billing surface anywhere in this feature.
+**Frontend**: `AdminScreen.tsx`, reachable only via an "Admin" button in `AuthBar` that itself only renders when `user.is_admin` is true (read from `GET /api/auth/me`, display-only — every admin API call the screen makes is independently re-authorized server-side regardless of what the client believes, so a stale or spoofed client-side flag can't grant anything real). No router exists in this app (same as the password-reset/extension-handoff screens); `AdminScreen` is a local `App.tsx` state branch, the established pattern here. Five tabs — Dashboard, Users, Jobs, Plans, Audit log — the last three (2026-09-20) added a shared `PaginationControls` component (Previous/Next over the `limit`/`offset` convention above, used by Users/Jobs/Audit log alike), an accessible plan-edit dialog (`useDialogA11y`, the same WAI-ARIA pattern `AuthModal`/`DeleteAccountModal` already established — focus moves to the panel on open, restores on close, Escape closes it), and the audit log's own read-only table (timestamp, `admin_user_id` or "System" for the two null cases above, action, target, and a wrapped, non-scrolling rendering of `details`' safe key/value pairs).
+
+**Deliberately not built**: no bulk actions (disable/enable and plan edits both still operate on one target per request), no admin-triggered account deletion (an admin can disable an account, not delete it — deletion stays a self-service, password-confirmed action, see Accounts & auth above), no payment/billing surface anywhere in this feature, and no email lookup on audit log entries (`admin_user_id` is shown as the raw id — the API doesn't join a user's email onto an audit entry, so the UI doesn't invent one; cross-reference `GET /api/admin/users/{id}` if needed, the same "don't re-embed, cross-reference" pattern the job list already uses for `user_id`).
 
 ## Product extraction (Milestone 7)
 

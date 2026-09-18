@@ -36,6 +36,7 @@ beforeEach(() => {
   mockedAdminClient.listAdminUsers.mockResolvedValue({ users: [], total: 0, limit: 50, offset: 0 });
   mockedAdminClient.listAdminJobs.mockResolvedValue({ jobs: [], total: 0, limit: 50, offset: 0 });
   mockedAdminClient.listAdminPlans.mockResolvedValue([]);
+  mockedAdminClient.listAdminAuditLog.mockResolvedValue({ entries: [], total: 0, limit: 50, offset: 0 });
 });
 
 describe("AdminScreen — navigation", () => {
@@ -478,5 +479,183 @@ describe("AdminScreen — plans tab", () => {
 
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(mockedAdminClient.updateAdminPlan).not.toHaveBeenCalled();
+  });
+});
+
+describe("AdminScreen — audit log tab", () => {
+  const disableEntry = {
+    id: 1,
+    admin_user_id: 3,
+    action: "user_disabled",
+    target_type: "user",
+    target_id: "42",
+    details: { email: "target@example.com" },
+    created_at: "2026-01-01T00:00:00Z",
+  };
+  const bootstrapEntry = {
+    id: 2,
+    admin_user_id: null,
+    action: "admin_promoted",
+    target_type: "user",
+    target_id: "7",
+    details: { email: "newadmin@example.com", promoted_via: "promote_admin.py" },
+    created_at: "2026-01-02T00:00:00Z",
+  };
+
+  it("shows an empty state when there are no entries", async () => {
+    const user = userEvent.setup();
+    render(<AdminScreen authToken="tok" onClose={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "audit log" }));
+
+    await waitFor(() => expect(screen.getByText("No audit log entries found.")).toBeInTheDocument());
+  });
+
+  it("renders each entry's timestamp, admin, action, target, and details", async () => {
+    mockedAdminClient.listAdminAuditLog.mockResolvedValue({
+      entries: [disableEntry],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    });
+    const user = userEvent.setup();
+    render(<AdminScreen authToken="tok" onClose={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "audit log" }));
+
+    await screen.findByText("user_disabled");
+    expect(screen.getByText("3")).toBeInTheDocument(); // admin_user_id
+    expect(screen.getByText("user: 42")).toBeInTheDocument();
+    expect(screen.getByText("target@example.com")).toBeInTheDocument(); // details.email
+    expect(screen.getByText(new Date("2026-01-01T00:00:00Z").toLocaleString())).toBeInTheDocument();
+  });
+
+  it("shows 'System' for an entry with no HTTP-authenticated admin actor", async () => {
+    mockedAdminClient.listAdminAuditLog.mockResolvedValue({
+      entries: [bootstrapEntry],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    });
+    const user = userEvent.setup();
+    render(<AdminScreen authToken="tok" onClose={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "audit log" }));
+
+    await screen.findByText("admin_promoted");
+    expect(screen.getByText("System")).toBeInTheDocument();
+  });
+
+  it("never renders a secret-looking field even if one somehow appeared in details", async () => {
+    mockedAdminClient.listAdminAuditLog.mockResolvedValue({
+      entries: [
+        {
+          id: 3,
+          admin_user_id: 1,
+          action: "plan_updated",
+          target_type: "plan",
+          target_id: "free",
+          details: { before: { max_generations_per_day: 5 }, after: { max_generations_per_day: 10 } },
+          created_at: "2026-01-03T00:00:00Z",
+        },
+      ],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    });
+    const user = userEvent.setup();
+    render(<AdminScreen authToken="tok" onClose={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "audit log" }));
+
+    await screen.findByText("plan_updated");
+    expect(screen.getByText("plan: free")).toBeInTheDocument();
+    // Nested detail values render as readable JSON, not [object Object].
+    expect(screen.getAllByText(/max_generations_per_day/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/password|token|secret/i)).not.toBeInTheDocument();
+  });
+
+  it("filters by target type, resetting to page 1", async () => {
+    const user = userEvent.setup();
+    render(<AdminScreen authToken="tok" onClose={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "audit log" }));
+    await waitFor(() =>
+      expect(mockedAdminClient.listAdminAuditLog).toHaveBeenCalledWith("tok", {
+        targetType: undefined,
+        targetId: undefined,
+        limit: 50,
+        offset: 0,
+      }),
+    );
+
+    await user.selectOptions(screen.getByLabelText("Target type"), "plan");
+
+    await waitFor(() =>
+      expect(mockedAdminClient.listAdminAuditLog).toHaveBeenLastCalledWith("tok", {
+        targetType: "plan",
+        targetId: undefined,
+        limit: 50,
+        offset: 0,
+      }),
+    );
+  });
+
+  it("filters by target ID via the filter form", async () => {
+    const user = userEvent.setup();
+    render(<AdminScreen authToken="tok" onClose={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "audit log" }));
+    await waitFor(() => expect(mockedAdminClient.listAdminAuditLog).toHaveBeenCalled());
+
+    await user.type(screen.getByLabelText("Filter by target ID"), "42");
+    await user.click(screen.getByRole("button", { name: "Filter" }));
+
+    await waitFor(() =>
+      expect(mockedAdminClient.listAdminAuditLog).toHaveBeenLastCalledWith("tok", {
+        targetType: undefined,
+        targetId: "42",
+        limit: 50,
+        offset: 0,
+      }),
+    );
+  });
+
+  it("pages forward through the audit log with Next, requesting the next offset", async () => {
+    mockedAdminClient.listAdminAuditLog.mockResolvedValueOnce({
+      entries: [disableEntry],
+      total: 60,
+      limit: 50,
+      offset: 0,
+    });
+    const user = userEvent.setup();
+    render(<AdminScreen authToken="tok" onClose={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "audit log" }));
+    await screen.findByText("user_disabled");
+
+    mockedAdminClient.listAdminAuditLog.mockResolvedValueOnce({
+      entries: [bootstrapEntry],
+      total: 60,
+      limit: 50,
+      offset: 50,
+    });
+    await user.click(screen.getByRole("button", { name: "Next page" }));
+
+    await waitFor(() =>
+      expect(mockedAdminClient.listAdminAuditLog).toHaveBeenLastCalledWith("tok", {
+        targetType: undefined,
+        targetId: undefined,
+        limit: 50,
+        offset: 50,
+      }),
+    );
+  });
+
+  it("shows the backend's real error message on failure", async () => {
+    mockedAdminClient.listAdminAuditLog.mockRejectedValue(new ApiError("Admin access required.", 403));
+    const user = userEvent.setup();
+    render(<AdminScreen authToken="tok" onClose={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "audit log" }));
+
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Admin access required."));
   });
 });

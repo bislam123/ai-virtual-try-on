@@ -1,5 +1,6 @@
 import { apiFetch } from "./http";
 import type {
+  AdminAuditLogListResponse,
   AdminDashboard,
   AdminJobListResponse,
   AdminPlan,
@@ -75,6 +76,20 @@ export async function listAdminJobs(
   const qs = query.toString();
   const response = await apiFetch(`/api/admin/jobs${qs ? `?${qs}` : ""}`, undefined, token);
   return (await response.json()) as AdminJobListResponse;
+}
+
+export async function listAdminAuditLog(
+  token: string,
+  params?: { targetType?: string; targetId?: string; limit?: number; offset?: number },
+): Promise<AdminAuditLogListResponse> {
+  const query = new URLSearchParams();
+  if (params?.targetType) query.set("target_type", params.targetType);
+  if (params?.targetId) query.set("target_id", params.targetId);
+  if (params?.limit !== undefined) query.set("limit", String(params.limit));
+  if (params?.offset !== undefined) query.set("offset", String(params.offset));
+  const qs = query.toString();
+  const response = await apiFetch(`/api/admin/audit-log${qs ? `?${qs}` : ""}`, undefined, token);
+  return (await response.json()) as AdminAuditLogListResponse;
 }
 
 export async function getAdminDashboard(token: string): Promise<AdminDashboard> {

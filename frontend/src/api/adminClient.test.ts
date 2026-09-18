@@ -4,6 +4,7 @@ import {
   enableAdminUser,
   getAdminDashboard,
   getAdminUser,
+  listAdminAuditLog,
   listAdminJobs,
   listAdminPlans,
   listAdminUsers,
@@ -159,6 +160,43 @@ describe("adminClient", () => {
     expect(String(url)).toContain("status=failed");
     expect(String(url)).toContain("user_id=42");
     expect(String(url)).toContain("limit=5");
+  });
+
+  it("listAdminAuditLog encodes target_type/target_id/limit/offset as query params", async () => {
+    const mockFetch = vi.mocked(globalThis.fetch);
+    mockFetch.mockResolvedValue(new Response(JSON.stringify({ entries: [], total: 0, limit: 50, offset: 0 }), { status: 200 }));
+
+    await listAdminAuditLog("tok-admin", { targetType: "user", targetId: "42", limit: 20, offset: 10 });
+
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(String(url)).toContain("/api/admin/audit-log?");
+    expect(String(url)).toContain("target_type=user");
+    expect(String(url)).toContain("target_id=42");
+    expect(String(url)).toContain("limit=20");
+    expect(String(url)).toContain("offset=10");
+    const headers = new Headers(init?.headers);
+    expect(headers.get("Authorization")).toBe("Bearer tok-admin");
+  });
+
+  it("listAdminAuditLog omits query params entirely when none are given", async () => {
+    const mockFetch = vi.mocked(globalThis.fetch);
+    mockFetch.mockResolvedValue(new Response(JSON.stringify({ entries: [], total: 0, limit: 50, offset: 0 }), { status: 200 }));
+
+    await listAdminAuditLog("tok-admin");
+
+    const [url] = mockFetch.mock.calls[0];
+    expect(String(url)).toContain("/api/admin/audit-log");
+    expect(String(url)).not.toContain("?");
+  });
+
+  it("listAdminAuditLog surfaces a 403 (non-admin caller) as an ApiError", async () => {
+    const mockFetch = vi.mocked(globalThis.fetch);
+    mockFetch.mockResolvedValue(new Response(JSON.stringify({ detail: "Admin access required." }), { status: 403 }));
+
+    await expect(listAdminAuditLog("tok-not-admin")).rejects.toMatchObject({
+      message: "Admin access required.",
+      status: 403,
+    });
   });
 
   it("getAdminDashboard fetches the dashboard summary", async () => {

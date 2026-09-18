@@ -137,6 +137,15 @@ Production start command (from the repo root, with the venv's Python — Dockerf
 - **Migration-state discipline**: `alembic check` (used throughout this project's own milestones) confirms zero drift between `models.py` and the migration history before every deploy — wire it into CI (§16) and re-run it manually before any production deploy as a final gate.
 - **Requires external infrastructure**: a real, durable, backed-up (§15) PostgreSQL 17-compatible server — this repository provisions none.
 
+**Admin audit log table — production migration requirement**: `admin_audit_log` (migration `e1f5538acd61`) is created by the same `alembic upgrade head` this section already requires — no separate migration step, but also no admin mutation (account enable/disable, a plan-limit edit) will work until it's been run, since every one of those writes an audit row in the same database transaction as the mutation itself (`services/admin_service.py`'s `record_admin_audit_log`; see `docs/ARCHITECTURE.md`'s Admin/Operations section for the full design). Nothing this table stores is ever a secret — it's reviewed at every writer to hold only safe, non-secret context (an affected account's email, a plan's before/after limit values) — so it needs no handling beyond whatever this database already gets (§15's backup requirement covers it like any other table; there is no separate retention/redaction concern).
+
+**Admin bootstrap** (a one-time step after this deployment's first successful start, before `/api/admin/*` is useful): no admin account is created by any migration or by application code — every row starts `is_admin=false`, with no exception. Promote an existing, already-signed-up account directly against the production database:
+```powershell
+# From the repo root, same venv as the rest of the backend, pointed at production via AITRYON_DATABASE_URL:
+ai\.venv\Scripts\python.exe backend\scripts\promote_admin.py you@example.com
+```
+This is deliberately not an API call or an environment-variable-configured default admin — see `docs/ARCHITECTURE.md`'s "First-admin bootstrap" for why. The promotion itself is recorded to `admin_audit_log` (`admin_user_id=NULL`, `action="admin_promoted"` — there's no HTTP-authenticated admin session to attribute an out-of-band bootstrap to).
+
 ## 10. Persistent storage — **Implemented + requires operator configuration**
 
 `AITRYON_STORAGE_DIR` (two subdirectories: `tmp/` for in-flight uploads, `results/` for generated images) **must be a durable, persistent volume**, never ephemeral container storage wiped on restart/redeploy — a result a user explicitly saved (`JobRecord.saved`) is expected to survive both.
@@ -248,8 +257,9 @@ Never committed anywhere in this repository (`.env` is gitignored; only `.env.ex
 - [ ] `AITRYON_FRONTEND_BASE_URL` set to the real frontend origin
 - [ ] `AITRYON_EMAIL_PROVIDER=smtp` with `AITRYON_SMTP_*`/`AITRYON_EMAIL_FROM_*` set
 - [ ] `AITRYON_STORAGE_DIR` points at a durable, persistent, correctly-owned volume (§10)
-- [ ] `alembic upgrade head` run against the production database
+- [ ] `alembic upgrade head` run against the production database (includes `admin_audit_log`, migration `e1f5538acd61` — §9)
 - [ ] `alembic check` clean before this and every future deploy
+- [ ] First admin account promoted via `backend/scripts/promote_admin.py` (§9) — not before the account has signed up normally
 - [ ] Cleanup scheduler installed and confirmed running (§11)
 - [ ] Reverse proxy terminates real TLS, adds HSTS only after confirming TLS works, mirrors the body-size limit (§12)
 - [ ] `--proxy-headers --forwarded-allow-ips=<proxy IP>` set on the backend (never `'*'`)

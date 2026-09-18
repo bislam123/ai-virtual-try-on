@@ -59,6 +59,29 @@ export interface AdminJobListResponse {
   offset: number;
 }
 
+// Mirrors backend/app/models/schemas.py's AdminAuditLogEntry exactly --
+// `details` is a small, backend-reviewed-safe JSON blob (see
+// db/models.py's AdminAuditLog docstring: never a password/JWT/reset-
+// token/other credential), and `admin_user_id` is the only actor
+// identifier the API provides -- no email join exists (see
+// api/admin.py's _audit_entry), so the UI never invents one.
+export interface AdminAuditLogEntry {
+  id: number;
+  admin_user_id: number | null;
+  action: string;
+  target_type: string;
+  target_id: string;
+  details: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface AdminAuditLogListResponse {
+  entries: AdminAuditLogEntry[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 export interface AdminDashboard {
   total_users: number;
   active_users: number;
