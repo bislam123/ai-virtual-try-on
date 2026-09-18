@@ -31,6 +31,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from backend.app.db import User, get_session  # noqa: E402
+from backend.app.services.admin_service import record_admin_audit_log  # noqa: E402
 
 
 def promote_to_admin(email: str) -> int:
@@ -48,6 +49,20 @@ def promote_to_admin(email: str) -> int:
             print(f"{normalized} is already an admin. Nothing to do.")
             return 0
         user.is_admin = True
+        # admin_user_id=None -- this action has no HTTP-authenticated admin
+        # session to attribute it to; it's run out-of-band by whoever
+        # already has direct database access (see this script's own module
+        # docstring). Still worth recording: "when did this account become
+        # admin" is exactly the kind of question an audit trail exists to
+        # answer, even for the one action that predates any admin session.
+        record_admin_audit_log(
+            session,
+            admin_user_id=None,
+            action="admin_promoted",
+            target_type="user",
+            target_id=str(user.id),
+            details={"email": normalized, "promoted_via": "promote_admin.py"},
+        )
         print(f"{normalized} (user id {user.id}) is now an admin.")
         return 0
 

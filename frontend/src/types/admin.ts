@@ -12,6 +12,8 @@ export interface AdminUserSummary {
 export interface AdminUserListResponse {
   users: AdminUserSummary[];
   total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface AdminUserDetail extends AdminUserSummary {
@@ -20,6 +22,17 @@ export interface AdminUserDetail extends AdminUserSummary {
 
 export interface AdminPlan {
   name: string;
+  max_generations_per_day: number | null;
+  max_generations_per_month: number | null;
+  max_num_timesteps: number | null;
+}
+
+// All three keys are always required -- `null` explicitly means
+// "unlimited" for that field, while an omitted key is a 422 (see the
+// backend's PlanUpdateRequest docstring, models/schemas.py). This
+// endpoint always edits every limit together; there's no partial-update
+// shape to represent here.
+export interface AdminPlanUpdateRequest {
   max_generations_per_day: number | null;
   max_generations_per_month: number | null;
   max_num_timesteps: number | null;
@@ -42,6 +55,8 @@ export interface AdminJobSummary {
 export interface AdminJobListResponse {
   jobs: AdminJobSummary[];
   total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface AdminDashboard {

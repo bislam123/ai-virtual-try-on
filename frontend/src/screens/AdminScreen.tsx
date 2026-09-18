@@ -6,9 +6,15 @@ import {
   listAdminJobs,
   listAdminPlans,
   listAdminUsers,
+  updateAdminPlan,
 } from "../api/adminClient";
 import { ApiError } from "../api/http";
+import { useDialogA11y } from "../hooks/useDialogA11y";
 import type { AdminDashboard, AdminJobSummary, AdminPlan, AdminUserSummary } from "../types/admin";
+
+// Applies to both the users and jobs tabs -- neither exposes a page-size
+// control (not asked for), only Previous/Next over a fixed page size.
+const PAGE_SIZE = 50;
 
 interface AdminScreenProps {
   authToken: string;
@@ -65,6 +71,52 @@ export default function AdminScreen({ authToken, onClose }: AdminScreenProps) {
       {tab === "users" && <UsersTab authToken={authToken} />}
       {tab === "jobs" && <JobsTab authToken={authToken} />}
       {tab === "plans" && <PlansTab authToken={authToken} />}
+    </div>
+  );
+}
+
+/** Shared Previous/Next pager for the users and jobs tabs -- both fetch a
+ * fixed-size page via limit/offset (see adminClient.ts) and only need to
+ * move one page at a time, not jump to an arbitrary page number. */
+function PaginationControls({
+  offset,
+  count,
+  total,
+  onPrev,
+  onNext,
+}: {
+  offset: number;
+  count: number;
+  total: number;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  if (total === 0) return null;
+  const rangeStart = count === 0 ? 0 : offset + 1;
+  const rangeEnd = offset + count;
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <button
+        type="button"
+        onClick={onPrev}
+        disabled={offset === 0}
+        aria-label="Previous page"
+        className="min-h-11 rounded-full border border-slate-200 px-4 text-sm font-semibold text-slate-600 disabled:opacity-50"
+      >
+        Previous
+      </button>
+      <p className="text-xs text-slate-400" aria-live="polite">
+        Showing {rangeStart}–{rangeEnd} of {total}
+      </p>
+      <button
+        type="button"
+        onClick={onNext}
+        disabled={rangeEnd >= total}
+        aria-label="Next page"
+        className="min-h-11 rounded-full border border-slate-200 px-4 text-sm font-semibold text-slate-600 disabled:opacity-50"
+      >
+        Next
+      </button>
     </div>
   );
 }
@@ -167,28 +219,35 @@ function DashboardTab({ authToken }: { authToken: string }) {
 
 function UsersTab({ authToken }: { authToken: string }) {
   const [search, setSearch] = useState("");
+  const [offset, setOffset] = useState(0);
   const [state, setState] = useState<LoadState<{ users: AdminUserSummary[]; total: number }>>({ status: "loading" });
   const [actionError, setActionError] = useState<string | null>(null);
   const [pendingUserId, setPendingUserId] = useState<number | null>(null);
 
   const load = useCallback(
-    (searchTerm: string) => {
+    (searchTerm: string, pageOffset: number) => {
       setState({ status: "loading" });
-      listAdminUsers(authToken, { search: searchTerm || undefined, limit: 50 })
-        .then((res) => setState({ status: "ready", users: res.users, total: res.total }))
+      listAdminUsers(authToken, { search: searchTerm || undefined, limit: PAGE_SIZE, offset: pageOffset })
+        .then((res) => {
+          setOffset(pageOffset);
+          setState({ status: "ready", users: res.users, total: res.total });
+        })
         .catch((err) => setState({ status: "error", message: genericErrorMessage(err) }));
     },
     [authToken],
   );
 
   useEffect(() => {
-    load("");
+    load("", 0);
   }, [load]);
 
   const handleSearchSubmit = (e: FormEvent) => {
     e.preventDefault();
-    load(search);
+    load(search, 0); // a new search always starts back at page 1
   };
+
+  const handlePrevPage = () => load(search, Math.max(0, offset - PAGE_SIZE));
+  const handleNextPage = () => load(search, offset + PAGE_SIZE);
 
   const handleToggleActive = async (user: AdminUserSummary) => {
     setActionError(null);
@@ -245,9 +304,6 @@ function UsersTab({ authToken }: { authToken: string }) {
       {state.status === "ready" && state.users.length === 0 && <p className="text-sm text-slate-500">No users found.</p>}
       {state.status === "ready" && state.users.length > 0 && (
         <>
-          <p className="text-xs text-slate-400">
-            Showing {state.users.length} of {state.total}
-          </p>
           <div className="overflow-x-auto">
             <table aria-label="Users" className="w-full min-w-[640px] text-left text-sm">
               <thead>
@@ -295,6 +351,13 @@ function UsersTab({ authToken }: { authToken: string }) {
               </tbody>
             </table>
           </div>
+          <PaginationControls
+            offset={offset}
+            count={state.users.length}
+            total={state.total}
+            onPrev={handlePrevPage}
+            onNext={handleNextPage}
+          />
         </>
       )}
     </div>
@@ -320,26 +383,33 @@ const JOB_STATUS_OPTIONS = ["pending", "processing", "completed", "failed", "can
 
 function JobsTab({ authToken }: { authToken: string }) {
   const [statusFilter, setStatusFilter] = useState("");
+  const [offset, setOffset] = useState(0);
   const [state, setState] = useState<LoadState<{ jobs: AdminJobSummary[]; total: number }>>({ status: "loading" });
 
   const load = useCallback(
-    (status: string) => {
+    (status: string, pageOffset: number) => {
       setState({ status: "loading" });
-      listAdminJobs(authToken, { status: status || undefined, limit: 50 })
-        .then((res) => setState({ status: "ready", jobs: res.jobs, total: res.total }))
+      listAdminJobs(authToken, { status: status || undefined, limit: PAGE_SIZE, offset: pageOffset })
+        .then((res) => {
+          setOffset(pageOffset);
+          setState({ status: "ready", jobs: res.jobs, total: res.total });
+        })
         .catch((err) => setState({ status: "error", message: genericErrorMessage(err) }));
     },
     [authToken],
   );
 
   useEffect(() => {
-    load("");
+    load("", 0);
   }, [load]);
 
   const handleFilterChange = (value: string) => {
     setStatusFilter(value);
-    load(value);
+    load(value, 0); // changing the filter always starts back at page 1
   };
+
+  const handlePrevPage = () => load(statusFilter, Math.max(0, offset - PAGE_SIZE));
+  const handleNextPage = () => load(statusFilter, offset + PAGE_SIZE);
 
   return (
     <div className="flex flex-col gap-4">
@@ -375,9 +445,6 @@ function JobsTab({ authToken }: { authToken: string }) {
       {state.status === "ready" && state.jobs.length === 0 && <p className="text-sm text-slate-500">No jobs found.</p>}
       {state.status === "ready" && state.jobs.length > 0 && (
         <>
-          <p className="text-xs text-slate-400">
-            Showing {state.jobs.length} of {state.total}
-          </p>
           <div className="overflow-x-auto">
             <table aria-label="Jobs" className="w-full min-w-[720px] text-left text-sm">
               <thead>
@@ -431,6 +498,13 @@ function JobsTab({ authToken }: { authToken: string }) {
               </tbody>
             </table>
           </div>
+          <PaginationControls
+            offset={offset}
+            count={state.jobs.length}
+            total={state.total}
+            onPrev={handlePrevPage}
+            onNext={handleNextPage}
+          />
         </>
       )}
     </div>
@@ -439,6 +513,7 @@ function JobsTab({ authToken }: { authToken: string }) {
 
 function PlansTab({ authToken }: { authToken: string }) {
   const [state, setState] = useState<LoadState<{ plans: AdminPlan[] }>>({ status: "loading" });
+  const [editingPlan, setEditingPlan] = useState<AdminPlan | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -453,6 +528,13 @@ function PlansTab({ authToken }: { authToken: string }) {
       cancelled = true;
     };
   }, [authToken]);
+
+  const handlePlanSaved = (updated: AdminPlan) => {
+    setState((prev) =>
+      prev.status === "ready" ? { ...prev, plans: prev.plans.map((p) => (p.name === updated.name ? updated : p)) } : prev,
+    );
+    setEditingPlan(null);
+  };
 
   if (state.status === "loading") {
     return (
@@ -473,26 +555,171 @@ function PlansTab({ authToken }: { authToken: string }) {
   }
 
   return (
-    <ul className="flex flex-col gap-3">
-      {state.plans.map((plan) => (
-        <li key={plan.name} className="rounded-2xl bg-white p-4 shadow-sm">
-          <p className="font-semibold capitalize text-slate-900">{plan.name}</p>
-          <dl className="mt-2 grid grid-cols-3 gap-2 text-xs text-slate-500">
-            <div>
-              <dt className="font-medium text-slate-400">Per day</dt>
-              <dd>{plan.max_generations_per_day ?? "Unlimited"}</dd>
+    <>
+      <ul className="flex flex-col gap-3">
+        {state.plans.map((plan) => (
+          <li key={plan.name} className="rounded-2xl bg-white p-4 shadow-sm">
+            <div className="flex items-center justify-between gap-2">
+              <p className="font-semibold capitalize text-slate-900">{plan.name}</p>
+              <button
+                type="button"
+                onClick={() => setEditingPlan(plan)}
+                className="min-h-11 rounded-full border border-slate-200 px-3 text-xs font-semibold text-slate-600"
+              >
+                Edit
+              </button>
             </div>
-            <div>
-              <dt className="font-medium text-slate-400">Per month</dt>
-              <dd>{plan.max_generations_per_month ?? "Unlimited"}</dd>
-            </div>
-            <div>
-              <dt className="font-medium text-slate-400">Max steps</dt>
-              <dd>{plan.max_num_timesteps ?? "Default"}</dd>
-            </div>
-          </dl>
-        </li>
-      ))}
-    </ul>
+            <dl className="mt-2 grid grid-cols-3 gap-2 text-xs text-slate-500">
+              <div>
+                <dt className="font-medium text-slate-400">Per day</dt>
+                <dd>{plan.max_generations_per_day ?? "Unlimited"}</dd>
+              </div>
+              <div>
+                <dt className="font-medium text-slate-400">Per month</dt>
+                <dd>{plan.max_generations_per_month ?? "Unlimited"}</dd>
+              </div>
+              <div>
+                <dt className="font-medium text-slate-400">Max steps</dt>
+                <dd>{plan.max_num_timesteps ?? "Default"}</dd>
+              </div>
+            </dl>
+          </li>
+        ))}
+      </ul>
+      {editingPlan && (
+        <PlanEditModal plan={editingPlan} authToken={authToken} onClose={() => setEditingPlan(null)} onSave={handlePlanSaved} />
+      )}
+    </>
+  );
+}
+
+/** Edits an *existing* plan's three limit fields only -- never creates or
+ * deletes a plan (see backend api/admin.py's update_plan docstring). An
+ * empty field means "unlimited" (null), matching Plan's own
+ * nullable-means-unlimited columns; the input is otherwise a plain number
+ * field, validated server-side regardless of what's submitted here. */
+function PlanEditModal({
+  plan,
+  authToken,
+  onClose,
+  onSave,
+}: {
+  plan: AdminPlan;
+  authToken: string;
+  onClose: () => void;
+  onSave: (updated: AdminPlan) => void;
+}) {
+  const [maxPerDay, setMaxPerDay] = useState(plan.max_generations_per_day?.toString() ?? "");
+  const [maxPerMonth, setMaxPerMonth] = useState(plan.max_generations_per_month?.toString() ?? "");
+  const [maxTimesteps, setMaxTimesteps] = useState(plan.max_num_timesteps?.toString() ?? "");
+  const [error, setError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const panelRef = useDialogA11y(onClose);
+
+  const parseField = (value: string): number | null => (value.trim() === "" ? null : Number(value));
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setIsSubmitting(true);
+    try {
+      const updated = await updateAdminPlan(
+        plan.name,
+        {
+          max_generations_per_day: parseField(maxPerDay),
+          max_generations_per_month: parseField(maxPerMonth),
+          max_num_timesteps: parseField(maxTimesteps),
+        },
+        authToken,
+      );
+      onSave(updated);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Something went wrong. Please try again.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center" onClick={onClose}>
+      <div
+        ref={panelRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="plan-edit-modal-title"
+        className="max-h-[85vh] w-full max-w-sm overflow-y-auto rounded-t-2xl bg-white p-6 pb-8 shadow-xl sm:rounded-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-4 flex items-center justify-between">
+          <h2 id="plan-edit-modal-title" className="text-lg font-bold capitalize text-slate-900">
+            Edit {plan.name} plan
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="flex h-11 w-11 items-center justify-center text-xl text-slate-500"
+          >
+            ✕
+          </button>
+        </div>
+
+        <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-3">
+          <label htmlFor="plan-edit-per-day" className="text-xs font-medium text-slate-500">
+            Max generations per day (blank = unlimited)
+          </label>
+          <input
+            id="plan-edit-per-day"
+            type="number"
+            min={0}
+            inputMode="numeric"
+            value={maxPerDay}
+            onChange={(e) => setMaxPerDay(e.target.value)}
+            className="min-h-11 rounded-lg border border-slate-200 px-3 py-2.5 text-sm"
+          />
+
+          <label htmlFor="plan-edit-per-month" className="text-xs font-medium text-slate-500">
+            Max generations per month (blank = unlimited)
+          </label>
+          <input
+            id="plan-edit-per-month"
+            type="number"
+            min={0}
+            inputMode="numeric"
+            value={maxPerMonth}
+            onChange={(e) => setMaxPerMonth(e.target.value)}
+            className="min-h-11 rounded-lg border border-slate-200 px-3 py-2.5 text-sm"
+          />
+
+          <label htmlFor="plan-edit-timesteps" className="text-xs font-medium text-slate-500">
+            Max diffusion steps (blank = unlimited)
+          </label>
+          <input
+            id="plan-edit-timesteps"
+            type="number"
+            min={1}
+            inputMode="numeric"
+            value={maxTimesteps}
+            onChange={(e) => setMaxTimesteps(e.target.value)}
+            className="min-h-11 rounded-lg border border-slate-200 px-3 py-2.5 text-sm"
+          />
+
+          {error && (
+            <p role="alert" className="text-sm text-red-600">
+              {error}
+            </p>
+          )}
+
+          <button
+            type="submit"
+            disabled={isSubmitting}
+            className="mt-1 rounded-full bg-indigo-600 px-4 py-3 font-semibold text-white active:scale-[0.98] disabled:opacity-50"
+          >
+            {isSubmitting ? "Saving…" : "Save changes"}
+          </button>
+        </form>
+      </div>
+    </div>
   );
 }

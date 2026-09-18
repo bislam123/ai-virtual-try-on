@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from sqlalchemy import DateTime, ForeignKey, Index, String, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
@@ -203,3 +204,52 @@ class JobRecord(Base):
             postgresql_where=text("idempotency_key IS NOT NULL AND status <> 'failed'"),
         ),
     )
+
+
+class AdminAuditLog(Base):
+    """A persistent record of security-sensitive admin actions (disabling/
+    enabling an account, an admin-promotion bootstrap, a plan-limit edit).
+    Append-only from application code -- nothing here ever updates or
+    deletes a row; see services/admin_service.py's record_audit_log() and
+    backend/scripts/promote_admin.py, the only two writers.
+
+    `admin_user_id` is nullable and ON DELETE SET NULL, not CASCADE: if the
+    acting admin's account is later deleted, the audit trail of what they
+    did must survive that deletion, not disappear with it. It's also NULL
+    for the one action that has no HTTP-authenticated actor at all --
+    promote_admin.py's bootstrap, run directly against the database by an
+    operator, before any admin session exists to attribute it to.
+
+    `details` is a small, deliberately-restricted JSON blob for safe,
+    non-secret context (e.g. a plan's old/new limit values) -- never a
+    place to put a password, JWT, reset token, or any other credential;
+    every writer here is reviewed to guarantee that, the same discipline
+    already applied to error/log messages elsewhere in this codebase (see
+    core/errors.py, services/email_service.py). A write is always inside
+    the same get_session() transaction as the action it records (see
+    admin_service.py), so a failure to write the audit row rolls the
+    mutation back too, rather than the two ever disagreeing -- and any
+    such failure surfaces through the existing CatchUnhandledExceptionsMiddleware
+    generic-500 path (core/errors.py), never a raw exception detail.
+    """
+
+    __tablename__ = "admin_audit_log"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    admin_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # Short, stable slugs (e.g. "user_disabled", "plan_updated") -- see
+    # admin_service.py for the fixed set this application actually writes.
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    # What kind of thing the action targeted (e.g. "user", "plan"), plus
+    # its id as a string -- a plan's primary key is its name, not an int,
+    # so target_id is kept generic rather than typed per target_type.
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    details: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb"))
+    # DateTime(timezone=True) -- see Plan.created_at's comment above; every
+    # timestamp in this codebase is an unambiguous instant, never a
+    # session-timezone-dependent wall-clock value, and an audit trail's own
+    # timestamp matters most of all to get right.
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False, index=True)

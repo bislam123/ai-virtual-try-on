@@ -7,6 +7,7 @@ import {
   listAdminJobs,
   listAdminPlans,
   listAdminUsers,
+  updateAdminPlan,
 } from "./adminClient";
 import { ApiError } from "./http";
 
@@ -116,6 +117,36 @@ describe("adminClient", () => {
 
     await expect(listAdminPlans("tok-admin")).resolves.toEqual(plans);
     expect(String(mockFetch.mock.calls[0][0])).toContain("/api/admin/plans");
+  });
+
+  it("updateAdminPlan POSTs the body as JSON to the plan's endpoint", async () => {
+    const mockFetch = vi.mocked(globalThis.fetch);
+    const updated = { name: "free", max_generations_per_day: 10, max_generations_per_month: null, max_num_timesteps: 20 };
+    mockFetch.mockResolvedValue(new Response(JSON.stringify(updated), { status: 200 }));
+
+    const body = { max_generations_per_day: 10, max_generations_per_month: null, max_num_timesteps: 20 };
+    await expect(updateAdminPlan("free", body, "tok-admin")).resolves.toEqual(updated);
+
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(String(url)).toContain("/api/admin/plans/free");
+    expect(init?.method).toBe("POST");
+    expect(init?.body).toBe(JSON.stringify(body));
+    const headers = new Headers(init?.headers);
+    expect(headers.get("Authorization")).toBe("Bearer tok-admin");
+    expect(headers.get("Content-Type")).toBe("application/json");
+  });
+
+  it("updateAdminPlan surfaces a 422 (invalid values) as an ApiError", async () => {
+    const mockFetch = vi.mocked(globalThis.fetch);
+    mockFetch.mockResolvedValue(
+      new Response(JSON.stringify({ detail: "max_num_timesteps must be between 4 and 50, or null for unlimited." }), {
+        status: 422,
+      }),
+    );
+
+    await expect(
+      updateAdminPlan("free", { max_generations_per_day: 5, max_generations_per_month: null, max_num_timesteps: 500 }, "tok-admin"),
+    ).rejects.toBeInstanceOf(ApiError);
   });
 
   it("listAdminJobs encodes status/userId/limit/offset as query params", async () => {

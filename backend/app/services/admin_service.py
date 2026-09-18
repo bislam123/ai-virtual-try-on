@@ -20,11 +20,12 @@ tooling layered on data that already exists.
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
-from ..db import JobRecord, Plan, User, get_session
+from ..db import AdminAuditLog, JobRecord, Plan, User, get_session
 from .job_store import JobStatus
 
 # A job's duration is only a meaningful, safely-calculable figure once
@@ -89,6 +90,23 @@ class AdminPlanRow:
 
 
 @dataclass
+class AdminAuditLogRow:
+    id: int
+    admin_user_id: Optional[int]
+    action: str
+    target_type: str
+    target_id: str
+    details: Dict[str, Any]
+    created_at: datetime
+
+
+@dataclass
+class AdminAuditLogList:
+    entries: List[AdminAuditLogRow]
+    total: int
+
+
+@dataclass
 class AdminDashboard:
     total_users: int
     active_users: int
@@ -130,6 +148,45 @@ def _to_job_row(record: JobRecord) -> AdminJobRow:
     )
 
 
+def _to_audit_row(entry: AdminAuditLog) -> AdminAuditLogRow:
+    return AdminAuditLogRow(
+        id=entry.id,
+        admin_user_id=entry.admin_user_id,
+        action=entry.action,
+        target_type=entry.target_type,
+        target_id=entry.target_id,
+        details=entry.details,
+        created_at=entry.created_at,
+    )
+
+
+def record_admin_audit_log(
+    session: Session,
+    *,
+    admin_user_id: Optional[int],
+    action: str,
+    target_type: str,
+    target_id: str,
+    details: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Appends one audit row to `session` -- does NOT commit; the caller's
+    own get_session() block commits (or rolls back) it together with
+    whatever mutation it's recording, so the two can never disagree (see
+    AdminAuditLog's own docstring in db/models.py). `details` must only
+    ever hold safe, non-secret context -- reviewed at every call site
+    below, never a password/JWT/reset-token/other credential.
+    """
+    session.add(
+        AdminAuditLog(
+            admin_user_id=admin_user_id,
+            action=action,
+            target_type=target_type,
+            target_id=target_id,
+            details=details or {},
+        )
+    )
+
+
 class AdminService:
     def list_users(
         self, *, search: Optional[str] = None, limit: int = DEFAULT_PAGE_SIZE, offset: int = 0
@@ -160,12 +217,20 @@ class AdminService:
             user = session.get(User, user_id)
             return _to_user_row(user) if user is not None else None
 
-    def set_user_active(self, user_id: int, active: bool) -> Optional[AdminUserRow]:
+    def set_user_active(self, user_id: int, active: bool, *, actor_id: int) -> Optional[AdminUserRow]:
         with get_session() as session:
             user = session.get(User, user_id)
             if user is None:
                 return None
             user.is_active = active
+            record_admin_audit_log(
+                session,
+                admin_user_id=actor_id,
+                action="user_enabled" if active else "user_disabled",
+                target_type="user",
+                target_id=str(user_id),
+                details={"email": user.email},
+            )
             session.flush()
             session.refresh(user)
             return _to_user_row(user)
@@ -182,6 +247,88 @@ class AdminService:
                 )
                 for p in plans
             ]
+
+    def update_plan(
+        self,
+        name: str,
+        *,
+        max_generations_per_day: Optional[int],
+        max_generations_per_month: Optional[int],
+        max_num_timesteps: Optional[int],
+        actor_id: int,
+    ) -> Optional[AdminPlanRow]:
+        """Edits an existing plan's three limit fields (see db/models.py's
+        Plan docstring) -- never creates or deletes a plan, matching this
+        milestone's "edit existing plan limits" scope, not a redesign of
+        the plan system. All three fields are always written together
+        (the caller/route always supplies all three, `None` meaning
+        "unlimited" for that field) -- there is no partial-update path, so
+        there's no ambiguity between "leave unchanged" and "set to null."
+        """
+        with get_session() as session:
+            plan = session.get(Plan, name)
+            if plan is None:
+                return None
+            before = {
+                "max_generations_per_day": plan.max_generations_per_day,
+                "max_generations_per_month": plan.max_generations_per_month,
+                "max_num_timesteps": plan.max_num_timesteps,
+            }
+            plan.max_generations_per_day = max_generations_per_day
+            plan.max_generations_per_month = max_generations_per_month
+            plan.max_num_timesteps = max_num_timesteps
+            after = {
+                "max_generations_per_day": max_generations_per_day,
+                "max_generations_per_month": max_generations_per_month,
+                "max_num_timesteps": max_num_timesteps,
+            }
+            # Plan limits are plain integers/None -- never a secret -- so
+            # recording both old and new values in full is safe and is
+            # exactly what makes this audit entry useful (see AdminAuditLog's
+            # docstring on what `details` may and may not hold).
+            record_admin_audit_log(
+                session,
+                admin_user_id=actor_id,
+                action="plan_updated",
+                target_type="plan",
+                target_id=name,
+                details={"before": before, "after": after},
+            )
+            session.flush()
+            session.refresh(plan)
+            return AdminPlanRow(
+                name=plan.name,
+                max_generations_per_day=plan.max_generations_per_day,
+                max_generations_per_month=plan.max_generations_per_month,
+                max_num_timesteps=plan.max_num_timesteps,
+            )
+
+    def list_audit_log(
+        self,
+        *,
+        target_type: Optional[str] = None,
+        target_id: Optional[str] = None,
+        limit: int = DEFAULT_PAGE_SIZE,
+        offset: int = 0,
+    ) -> AdminAuditLogList:
+        limit = max(1, min(limit, MAX_PAGE_SIZE))
+        offset = max(0, offset)
+        with get_session() as session:
+            query = select(AdminAuditLog)
+            count_query = select(func.count()).select_from(AdminAuditLog)
+            if target_type:
+                query = query.where(AdminAuditLog.target_type == target_type)
+                count_query = count_query.where(AdminAuditLog.target_type == target_type)
+            if target_id:
+                query = query.where(AdminAuditLog.target_id == target_id)
+                count_query = count_query.where(AdminAuditLog.target_id == target_id)
+
+            total = session.scalar(count_query) or 0
+            records = session.scalars(
+                query.order_by(AdminAuditLog.created_at.desc()).limit(limit).offset(offset)
+            ).all()
+            entries = [_to_audit_row(r) for r in records]
+        return AdminAuditLogList(entries=entries, total=total)
 
     def list_jobs(
         self,

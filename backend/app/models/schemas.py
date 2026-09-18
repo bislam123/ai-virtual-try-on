@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, EmailStr, Field
 
@@ -122,6 +122,12 @@ class AdminUserSummary(BaseModel):
 class AdminUserListResponse(BaseModel):
     users: list[AdminUserSummary]
     total: int
+    # Echoes back the limit/offset this page was actually fetched with --
+    # enough for the frontend to compute a page number / disable a
+    # next-page control at the end, without needing to separately track
+    # what it last requested.
+    limit: int
+    offset: int
 
 
 class AdminUserDetail(AdminUserSummary):
@@ -135,6 +141,25 @@ class AdminPlanResponse(BaseModel):
     max_generations_per_day: Optional[int]
     max_generations_per_month: Optional[int]
     max_num_timesteps: Optional[int]
+
+
+class PlanUpdateRequest(BaseModel):
+    """All three fields are required keys (no default), even though each
+    one's *value* may be `null` -- `null` explicitly means "unlimited" for
+    that field (matching Plan's own nullable=unlimited columns), while an
+    omitted key is rejected as a 422 rather than silently guessed at. This
+    endpoint always edits all three limits together; there is no partial-
+    update path, so there's no "omitted vs. explicitly null" ambiguity to
+    resolve. Upper bounds are generous sanity caps against typos (e.g. a
+    stray extra digit), not real product limits -- max_num_timesteps is
+    additionally checked against this deployment's configured
+    AITRYON_MIN_NUM_TIMESTEPS/AITRYON_MAX_NUM_TIMESTEPS at the route layer
+    (api/admin.py), since that range is a runtime setting, not a fixed
+    constant this schema could hard-code."""
+
+    max_generations_per_day: Optional[int] = Field(..., ge=0, le=100_000)
+    max_generations_per_month: Optional[int] = Field(..., ge=0, le=1_000_000)
+    max_num_timesteps: Optional[int] = Field(..., ge=1, le=200)
 
 
 class AdminJobSummary(BaseModel):
@@ -161,6 +186,29 @@ class AdminJobSummary(BaseModel):
 class AdminJobListResponse(BaseModel):
     jobs: list[AdminJobSummary]
     total: int
+    limit: int
+    offset: int
+
+
+class AdminAuditLogEntry(BaseModel):
+    id: int
+    # None for the one action with no HTTP-authenticated admin session at
+    # all (the promote_admin.py bootstrap script), and also once an
+    # admin's own account is later deleted (ON DELETE SET NULL preserves
+    # the entry, not the actor -- see db/models.py's AdminAuditLog).
+    admin_user_id: Optional[int]
+    action: str
+    target_type: str
+    target_id: str
+    details: Dict[str, Any]
+    created_at: datetime
+
+
+class AdminAuditLogListResponse(BaseModel):
+    entries: list[AdminAuditLogEntry]
+    total: int
+    limit: int
+    offset: int
 
 
 class AdminDashboardResponse(BaseModel):

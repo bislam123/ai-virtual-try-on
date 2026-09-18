@@ -33,8 +33,8 @@ const dashboardData = {
 beforeEach(() => {
   vi.clearAllMocks();
   mockedAdminClient.getAdminDashboard.mockResolvedValue(dashboardData);
-  mockedAdminClient.listAdminUsers.mockResolvedValue({ users: [], total: 0 });
-  mockedAdminClient.listAdminJobs.mockResolvedValue({ jobs: [], total: 0 });
+  mockedAdminClient.listAdminUsers.mockResolvedValue({ users: [], total: 0, limit: 50, offset: 0 });
+  mockedAdminClient.listAdminJobs.mockResolvedValue({ jobs: [], total: 0, limit: 50, offset: 0 });
   mockedAdminClient.listAdminPlans.mockResolvedValue([]);
 });
 
@@ -109,7 +109,7 @@ describe("AdminScreen — users tab", () => {
   });
 
   it("renders each user's email/plan/admin/active status, unlabelled table cells match", async () => {
-    mockedAdminClient.listAdminUsers.mockResolvedValue({ users, total: 2 });
+    mockedAdminClient.listAdminUsers.mockResolvedValue({ users, total: 2, limit: 50, offset: 0 });
     const user = userEvent.setup();
     render(<AdminScreen authToken="tok" onClose={vi.fn()} />);
 
@@ -119,11 +119,11 @@ describe("AdminScreen — users tab", () => {
     expect(screen.getByText("bob@example.com")).toBeInTheDocument();
     expect(screen.getByText("premium")).toBeInTheDocument();
     expect(screen.getByText("Disabled")).toBeInTheDocument(); // bob is inactive
-    expect(screen.getByText("Showing 2 of 2")).toBeInTheDocument();
+    expect(screen.getByText("Showing 1–2 of 2")).toBeInTheDocument();
   });
 
   it("lets an admin disable an active user, and the row updates to reflect it", async () => {
-    mockedAdminClient.listAdminUsers.mockResolvedValue({ users: [users[0]], total: 1 });
+    mockedAdminClient.listAdminUsers.mockResolvedValue({ users: [users[0]], total: 1, limit: 50, offset: 0 });
     mockedAdminClient.disableAdminUser.mockResolvedValue({ ...users[0], is_active: false });
     const user = userEvent.setup();
     render(<AdminScreen authToken="tok" onClose={vi.fn()} />);
@@ -142,7 +142,7 @@ describe("AdminScreen — users tab", () => {
   });
 
   it("shows an action error without losing the list on a failed disable attempt", async () => {
-    mockedAdminClient.listAdminUsers.mockResolvedValue({ users: [users[0]], total: 1 });
+    mockedAdminClient.listAdminUsers.mockResolvedValue({ users: [users[0]], total: 1, limit: 50, offset: 0 });
     mockedAdminClient.disableAdminUser.mockRejectedValue(
       new ApiError("You can't disable your own admin account.", 400),
     );
@@ -164,14 +164,83 @@ describe("AdminScreen — users tab", () => {
     render(<AdminScreen authToken="tok" onClose={vi.fn()} />);
     await user.click(screen.getByRole("button", { name: "users" }));
     await waitFor(() =>
-      expect(mockedAdminClient.listAdminUsers).toHaveBeenCalledWith("tok", { search: undefined, limit: 50 }),
+      expect(mockedAdminClient.listAdminUsers).toHaveBeenCalledWith("tok", { search: undefined, limit: 50, offset: 0 }),
     );
 
     await user.type(screen.getByLabelText("Search users by email"), "alice");
     await user.click(screen.getByRole("button", { name: "Search" }));
 
     await waitFor(() =>
-      expect(mockedAdminClient.listAdminUsers).toHaveBeenLastCalledWith("tok", { search: "alice", limit: 50 }),
+      expect(mockedAdminClient.listAdminUsers).toHaveBeenLastCalledWith("tok", {
+        search: "alice",
+        limit: 50,
+        offset: 0,
+      }),
+    );
+  });
+
+  it("pages forward and back through users with Previous/Next, disabling at each end", async () => {
+    mockedAdminClient.listAdminUsers.mockResolvedValueOnce({ users: [users[0]], total: 2, limit: 50, offset: 0 });
+    const user = userEvent.setup();
+    render(<AdminScreen authToken="tok" onClose={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "users" }));
+    await screen.findByText("alice@example.com");
+
+    expect(screen.getByRole("button", { name: "Previous page" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Next page" })).not.toBeDisabled();
+
+    mockedAdminClient.listAdminUsers.mockResolvedValueOnce({ users: [users[1]], total: 2, limit: 50, offset: 0 });
+    await user.click(screen.getByRole("button", { name: "Next page" }));
+
+    await waitFor(() =>
+      expect(mockedAdminClient.listAdminUsers).toHaveBeenLastCalledWith("tok", {
+        search: undefined,
+        limit: 50,
+        offset: 50,
+      }),
+    );
+    await screen.findByText("bob@example.com");
+    expect(screen.getByRole("button", { name: "Next page" })).toBeDisabled();
+
+    mockedAdminClient.listAdminUsers.mockResolvedValueOnce({ users: [users[0]], total: 2, limit: 50, offset: 0 });
+    await user.click(screen.getByRole("button", { name: "Previous page" }));
+
+    await waitFor(() =>
+      expect(mockedAdminClient.listAdminUsers).toHaveBeenLastCalledWith("tok", {
+        search: undefined,
+        limit: 50,
+        offset: 0,
+      }),
+    );
+  });
+
+  it("resets to page 1 when a new search is submitted", async () => {
+    mockedAdminClient.listAdminUsers.mockResolvedValueOnce({ users: [users[1]], total: 51, limit: 50, offset: 0 });
+    const user = userEvent.setup();
+    render(<AdminScreen authToken="tok" onClose={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "users" }));
+    await screen.findByText("bob@example.com");
+
+    mockedAdminClient.listAdminUsers.mockResolvedValueOnce({ users: [users[1]], total: 51, limit: 50, offset: 0 });
+    await user.click(screen.getByRole("button", { name: "Next page" }));
+    await waitFor(() =>
+      expect(mockedAdminClient.listAdminUsers).toHaveBeenLastCalledWith("tok", {
+        search: undefined,
+        limit: 50,
+        offset: 50,
+      }),
+    );
+
+    mockedAdminClient.listAdminUsers.mockResolvedValueOnce({ users: [users[0]], total: 1, limit: 50, offset: 0 });
+    await user.type(screen.getByLabelText("Search users by email"), "alice");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+
+    await waitFor(() =>
+      expect(mockedAdminClient.listAdminUsers).toHaveBeenLastCalledWith("tok", {
+        search: "alice",
+        limit: 50,
+        offset: 0,
+      }),
     );
   });
 });
@@ -187,7 +256,11 @@ describe("AdminScreen — jobs tab", () => {
     await user.selectOptions(screen.getByLabelText("Status"), "failed");
 
     await waitFor(() =>
-      expect(mockedAdminClient.listAdminJobs).toHaveBeenLastCalledWith("tok", { status: "failed", limit: 50 }),
+      expect(mockedAdminClient.listAdminJobs).toHaveBeenLastCalledWith("tok", {
+        status: "failed",
+        limit: 50,
+        offset: 0,
+      }),
     );
   });
 
@@ -207,6 +280,8 @@ describe("AdminScreen — jobs tab", () => {
         },
       ],
       total: 1,
+      limit: 50,
+      offset: 0,
     });
     const user = userEvent.setup();
     render(<AdminScreen authToken="tok" onClose={vi.fn()} />);
@@ -234,6 +309,8 @@ describe("AdminScreen — jobs tab", () => {
         },
       ],
       total: 1,
+      limit: 50,
+      offset: 0,
     });
     const user = userEvent.setup();
     render(<AdminScreen authToken="tok" onClose={vi.fn()} />);
@@ -241,6 +318,36 @@ describe("AdminScreen — jobs tab", () => {
     await user.click(screen.getByRole("button", { name: "jobs" }));
 
     await screen.findByText("Anonymous");
+  });
+
+  it("pages forward through jobs with Next, requesting the next offset", async () => {
+    const job = {
+      job_id: "job-1",
+      user_id: 1,
+      status: "completed" as const,
+      category: "tops",
+      garment_photo_type: "flat-lay",
+      error: null,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+      processing_duration_seconds: 10,
+    };
+    mockedAdminClient.listAdminJobs.mockResolvedValueOnce({ jobs: [job], total: 60, limit: 50, offset: 0 });
+    const user = userEvent.setup();
+    render(<AdminScreen authToken="tok" onClose={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "jobs" }));
+    await screen.findByText("completed");
+
+    mockedAdminClient.listAdminJobs.mockResolvedValueOnce({ jobs: [{ ...job, job_id: "job-2" }], total: 60, limit: 50, offset: 0 });
+    await user.click(screen.getByRole("button", { name: "Next page" }));
+
+    await waitFor(() =>
+      expect(mockedAdminClient.listAdminJobs).toHaveBeenLastCalledWith("tok", {
+        status: undefined,
+        limit: 50,
+        offset: 50,
+      }),
+    );
   });
 });
 
@@ -265,5 +372,111 @@ describe("AdminScreen — plans tab", () => {
     await screen.findByText("free");
     expect(screen.getByText("5")).toBeInTheDocument();
     expect(screen.getByText("Unlimited")).toBeInTheDocument();
+  });
+
+  it("opens an accessible edit dialog, saves changes, and reflects them in the list", async () => {
+    mockedAdminClient.listAdminPlans.mockResolvedValue([
+      { name: "free", max_generations_per_day: 5, max_generations_per_month: null, max_num_timesteps: 30 },
+    ]);
+    mockedAdminClient.updateAdminPlan.mockResolvedValue({
+      name: "free",
+      max_generations_per_day: 10,
+      max_generations_per_month: null,
+      max_num_timesteps: 30,
+    });
+    const user = userEvent.setup();
+    render(<AdminScreen authToken="tok" onClose={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "plans" }));
+    await screen.findByText("free");
+
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+
+    const dialog = screen.getByRole("dialog", { name: /edit free plan/i });
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+
+    const perDayInput = within(dialog).getByLabelText(/max generations per day/i);
+    await user.clear(perDayInput);
+    await user.type(perDayInput, "10");
+    await user.click(within(dialog).getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() =>
+      expect(mockedAdminClient.updateAdminPlan).toHaveBeenCalledWith(
+        "free",
+        { max_generations_per_day: 10, max_generations_per_month: null, max_num_timesteps: 30 },
+        "tok",
+      ),
+    );
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.getByText("10")).toBeInTheDocument();
+  });
+
+  it("treats a blank field as unlimited (null) when saving", async () => {
+    mockedAdminClient.listAdminPlans.mockResolvedValue([
+      { name: "free", max_generations_per_day: 5, max_generations_per_month: null, max_num_timesteps: 30 },
+    ]);
+    mockedAdminClient.updateAdminPlan.mockResolvedValue({
+      name: "free",
+      max_generations_per_day: null,
+      max_generations_per_month: null,
+      max_num_timesteps: 30,
+    });
+    const user = userEvent.setup();
+    render(<AdminScreen authToken="tok" onClose={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "plans" }));
+    await screen.findByText("free");
+
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    const dialog = screen.getByRole("dialog");
+    const perDayInput = within(dialog).getByLabelText(/max generations per day/i);
+    await user.clear(perDayInput);
+    await user.click(within(dialog).getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() =>
+      expect(mockedAdminClient.updateAdminPlan).toHaveBeenCalledWith(
+        "free",
+        { max_generations_per_day: null, max_generations_per_month: null, max_num_timesteps: 30 },
+        "tok",
+      ),
+    );
+  });
+
+  it("shows the backend's validation error and keeps the dialog open on a failed save", async () => {
+    mockedAdminClient.listAdminPlans.mockResolvedValue([
+      { name: "free", max_generations_per_day: 5, max_generations_per_month: null, max_num_timesteps: 30 },
+    ]);
+    mockedAdminClient.updateAdminPlan.mockRejectedValue(
+      new ApiError("max_num_timesteps must be between 4 and 50, or null for unlimited.", 422),
+    );
+    const user = userEvent.setup();
+    render(<AdminScreen authToken="tok" onClose={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "plans" }));
+    await screen.findByText("free");
+
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent("max_num_timesteps must be between 4 and 50"),
+    );
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("closes the edit dialog on Escape without saving", async () => {
+    mockedAdminClient.listAdminPlans.mockResolvedValue([
+      { name: "free", max_generations_per_day: 5, max_generations_per_month: null, max_num_timesteps: 30 },
+    ]);
+    const user = userEvent.setup();
+    render(<AdminScreen authToken="tok" onClose={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "plans" }));
+    await screen.findByText("free");
+
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(mockedAdminClient.updateAdminPlan).not.toHaveBeenCalled();
   });
 });

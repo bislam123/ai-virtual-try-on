@@ -3,6 +3,7 @@ import type {
   AdminDashboard,
   AdminJobListResponse,
   AdminPlan,
+  AdminPlanUpdateRequest,
   AdminUserDetail,
   AdminUserListResponse,
   AdminUserSummary,
@@ -47,6 +48,19 @@ export async function enableAdminUser(userId: number, token: string): Promise<Ad
 export async function listAdminPlans(token: string): Promise<AdminPlan[]> {
   const response = await apiFetch("/api/admin/plans", undefined, token);
   return (await response.json()) as AdminPlan[];
+}
+
+export async function updateAdminPlan(
+  name: string,
+  body: AdminPlanUpdateRequest,
+  token: string,
+): Promise<AdminPlan> {
+  const response = await apiFetch(
+    `/api/admin/plans/${encodeURIComponent(name)}`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+    token,
+  );
+  return (await response.json()) as AdminPlan;
 }
 
 export async function listAdminJobs(

@@ -28,9 +28,11 @@ from sqlalchemy.exc import OperationalError
 from backend.app.api import admin as admin_module
 from backend.app.api import auth as auth_module
 from backend.app.api import tryon as tryon_module
-from backend.app.core.errors import configure_exception_handlers
-from backend.app.db import JobRecord, User, engine, get_session
+from backend.app.config import settings
+from backend.app.core.errors import CatchUnhandledExceptionsMiddleware, configure_exception_handlers
+from backend.app.db import AdminAuditLog, JobRecord, Plan, User, engine, get_session
 from backend.app.providers.base import TryOnRequest, TryOnResult, VirtualTryOnProvider
+from backend.app.services import admin_service as admin_service_module
 from backend.app.services.admin_service import AdminService
 from backend.app.services.db_job_store import DbJobStore
 from backend.app.services.quota_service import QuotaService
@@ -63,6 +65,11 @@ class FakeProvider(VirtualTryOnProvider):
 def make_test_app(tmp_path, quota_service=None, capacity_service=None):
     app = FastAPI()
     configure_exception_handlers(app)
+    # Innermost middleware, same as main.py -- needed so a genuinely
+    # unhandled exception (see test_audit_log_write_failure_surfaces_...
+    # below) gets the same safe generic-500 handling production requests
+    # do, instead of propagating raw through TestClient.
+    app.add_middleware(CatchUnhandledExceptionsMiddleware)
     app.include_router(tryon_module.router)
     app.include_router(auth_module.router)
     app.include_router(admin_module.router)
@@ -152,6 +159,25 @@ def admin(client, cleanup_users):
 
 
 @pytest.fixture
+def test_plan():
+    """A throwaway plan row, created and torn down directly via the
+    database -- exactly the out-of-band mechanism real plans are managed
+    through (see docs/DEVELOPMENT.md's Milestone 11). Deliberately never
+    the real seeded 'free'/'premium' plans: test_quota_service.py asserts
+    exact numeric values against 'free' (limit_per_day == 5), and mutating
+    it here -- even temporarily -- would make those tests flaky depending
+    on run order against the same shared local dev database."""
+    name = f"test-plan-{uuid.uuid4().hex[:16]}"
+    with get_session() as session:
+        session.add(Plan(name=name, max_generations_per_day=5, max_generations_per_month=None, max_num_timesteps=30))
+    yield name
+    with get_session() as session:
+        plan = session.get(Plan, name)
+        if plan is not None:
+            session.delete(plan)
+
+
+@pytest.fixture
 def normal_user(client, cleanup_users):
     """A real signed-up, never-promoted user. Returns (token, email, user_id)."""
     email = _unique_email("normal")
@@ -161,7 +187,13 @@ def normal_user(client, cleanup_users):
     return token, email, user_id
 
 
-ADMIN_GET_ENDPOINTS = ["/api/admin/users", "/api/admin/plans", "/api/admin/jobs", "/api/admin/dashboard"]
+ADMIN_GET_ENDPOINTS = [
+    "/api/admin/users",
+    "/api/admin/plans",
+    "/api/admin/jobs",
+    "/api/admin/dashboard",
+    "/api/admin/audit-log",
+]
 
 
 # --- Authorization matrix: unauthenticated / non-admin / admin -----------------
@@ -244,7 +276,7 @@ def test_search_users_no_match_returns_empty_not_error(client, admin):
         "/api/admin/users", params={"search": f"nobody-{uuid.uuid4().hex}"}, headers=_auth_headers(admin_token)
     )
     assert resp.status_code == 200
-    assert resp.json() == {"users": [], "total": 0}
+    assert resp.json() == {"users": [], "total": 0, "limit": 50, "offset": 0}
 
 
 def test_list_users_pagination(client, admin):
@@ -258,6 +290,25 @@ def test_list_users_pagination(client, admin):
     assert first_page.json()["total"] == second_page.json()["total"]
     if second_page.json()["users"]:
         assert first_page.json()["users"][0]["id"] != second_page.json()["users"][0]["id"]
+
+
+def test_list_users_echoes_requested_limit_and_offset(client, admin):
+    admin_token, _, _ = admin
+    resp = client.get("/api/admin/users", params={"limit": 3, "offset": 2}, headers=_auth_headers(admin_token))
+    assert resp.status_code == 200
+    assert resp.json()["limit"] == 3
+    assert resp.json()["offset"] == 2
+
+
+def test_list_users_rejects_out_of_range_limit_and_offset(client, admin):
+    admin_token, _, _ = admin
+    assert client.get("/api/admin/users", params={"limit": 0}, headers=_auth_headers(admin_token)).status_code == 422
+    assert (
+        client.get("/api/admin/users", params={"limit": 500}, headers=_auth_headers(admin_token)).status_code == 422
+    )
+    assert (
+        client.get("/api/admin/users", params={"offset": -1}, headers=_auth_headers(admin_token)).status_code == 422
+    )
 
 
 def test_user_summary_shows_created_at_plan_and_active_status(client, admin, normal_user):
@@ -364,6 +415,263 @@ def test_list_plans_includes_free_plan_with_limits(client, admin):
     assert "free" in names
 
 
+def _plan_update_body(**overrides):
+    body = {"max_generations_per_day": 10, "max_generations_per_month": None, "max_num_timesteps": 20}
+    body.update(overrides)
+    return body
+
+
+def test_update_plan_authorization_matrix(client, admin, normal_user, test_plan):
+    admin_token, _, _ = admin
+    other_token, _, _ = normal_user
+    body = _plan_update_body()
+
+    assert client.post(f"/api/admin/plans/{test_plan}", json=body).status_code == 401
+    assert (
+        client.post(f"/api/admin/plans/{test_plan}", json=body, headers=_auth_headers(other_token)).status_code
+        == 403
+    )
+    resp = client.post(f"/api/admin/plans/{test_plan}", json=body, headers=_auth_headers(admin_token))
+    assert resp.status_code == 200
+
+
+def test_update_plan_changes_are_persisted(client, admin, test_plan):
+    admin_token, _, _ = admin
+    body = _plan_update_body(max_generations_per_day=42, max_generations_per_month=999, max_num_timesteps=15)
+
+    resp = client.post(f"/api/admin/plans/{test_plan}", json=body, headers=_auth_headers(admin_token))
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "name": test_plan,
+        "max_generations_per_day": 42,
+        "max_generations_per_month": 999,
+        "max_num_timesteps": 15,
+    }
+
+    listed = client.get("/api/admin/plans", headers=_auth_headers(admin_token)).json()
+    updated = next(p for p in listed if p["name"] == test_plan)
+    assert updated["max_generations_per_day"] == 42
+
+
+def test_update_plan_allows_null_for_unlimited(client, admin, test_plan):
+    admin_token, _, _ = admin
+    body = _plan_update_body(max_generations_per_day=None, max_generations_per_month=None)
+
+    resp = client.post(f"/api/admin/plans/{test_plan}", json=body, headers=_auth_headers(admin_token))
+    assert resp.status_code == 200
+    assert resp.json()["max_generations_per_day"] is None
+
+
+def test_update_plan_404_for_nonexistent_plan(client, admin):
+    admin_token, _, _ = admin
+    resp = client.post(
+        f"/api/admin/plans/no-such-plan-{uuid.uuid4().hex}", json=_plan_update_body(), headers=_auth_headers(admin_token)
+    )
+    assert resp.status_code == 404
+
+
+def test_update_plan_rejects_negative_generation_limits(client, admin, test_plan):
+    admin_token, _, _ = admin
+    resp = client.post(
+        f"/api/admin/plans/{test_plan}",
+        json=_plan_update_body(max_generations_per_day=-1),
+        headers=_auth_headers(admin_token),
+    )
+    assert resp.status_code == 422
+
+
+def test_update_plan_rejects_missing_required_field(client, admin, test_plan):
+    admin_token, _, _ = admin
+    incomplete = {"max_generations_per_day": 5, "max_generations_per_month": None}  # max_num_timesteps omitted
+    resp = client.post(
+        f"/api/admin/plans/{test_plan}", json=incomplete, headers=_auth_headers(admin_token)
+    )
+    assert resp.status_code == 422
+
+
+def test_update_plan_rejects_num_timesteps_outside_configured_range(client, admin, test_plan):
+    admin_token, _, _ = admin
+    too_high = client.post(
+        f"/api/admin/plans/{test_plan}",
+        json=_plan_update_body(max_num_timesteps=settings.max_num_timesteps + 1),
+        headers=_auth_headers(admin_token),
+    )
+    assert too_high.status_code == 422
+
+    too_low = client.post(
+        f"/api/admin/plans/{test_plan}",
+        json=_plan_update_body(max_num_timesteps=settings.min_num_timesteps - 1),
+        headers=_auth_headers(admin_token),
+    )
+    assert too_low.status_code == 422
+
+
+def test_update_plan_allows_null_num_timesteps_for_unlimited(client, admin, test_plan):
+    admin_token, _, _ = admin
+    resp = client.post(
+        f"/api/admin/plans/{test_plan}",
+        json=_plan_update_body(max_num_timesteps=None),
+        headers=_auth_headers(admin_token),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["max_num_timesteps"] is None
+
+
+def test_non_admin_cannot_change_plan_limits_side_effect_free(client, normal_user, test_plan):
+    non_admin_token, _, _ = normal_user
+    resp = client.post(
+        f"/api/admin/plans/{test_plan}", json=_plan_update_body(), headers=_auth_headers(non_admin_token)
+    )
+    assert resp.status_code == 403
+    with get_session() as session:
+        plan = session.get(Plan, test_plan)
+        assert plan.max_generations_per_day == 5  # unchanged from the fixture's seeded value
+
+
+# --- Admin audit log --------------------------------------------------------------
+
+
+def test_disable_and_enable_each_write_an_audit_entry(client, admin, normal_user):
+    admin_token, _, admin_id = admin
+    _, _, target_id = normal_user
+
+    client.post(f"/api/admin/users/{target_id}/disable", headers=_auth_headers(admin_token))
+    client.post(f"/api/admin/users/{target_id}/enable", headers=_auth_headers(admin_token))
+
+    resp = client.get(
+        "/api/admin/audit-log", params={"target_type": "user", "target_id": target_id}, headers=_auth_headers(admin_token)
+    )
+    assert resp.status_code == 200
+    entries = resp.json()["entries"]
+    actions = [e["action"] for e in entries]
+    assert "user_disabled" in actions
+    assert "user_enabled" in actions
+    for entry in entries:
+        assert entry["admin_user_id"] == admin_id
+        assert entry["target_type"] == "user"
+        assert entry["target_id"] == str(target_id)
+        assert "created_at" in entry and entry["created_at"]
+
+
+def test_plan_update_writes_an_audit_entry_with_before_and_after(client, admin, test_plan):
+    admin_token, _, admin_id = admin
+    client.post(
+        f"/api/admin/plans/{test_plan}",
+        json=_plan_update_body(max_generations_per_day=77),
+        headers=_auth_headers(admin_token),
+    )
+
+    resp = client.get(
+        "/api/admin/audit-log", params={"target_type": "plan", "target_id": test_plan}, headers=_auth_headers(admin_token)
+    )
+    entries = resp.json()["entries"]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["action"] == "plan_updated"
+    assert entry["admin_user_id"] == admin_id
+    assert entry["details"]["before"]["max_generations_per_day"] == 5
+    assert entry["details"]["after"]["max_generations_per_day"] == 77
+
+
+def test_audit_log_entries_ordered_newest_first(client, admin, test_plan):
+    admin_token, _, _ = admin
+    client.post(f"/api/admin/plans/{test_plan}", json=_plan_update_body(max_generations_per_day=1), headers=_auth_headers(admin_token))
+    client.post(f"/api/admin/plans/{test_plan}", json=_plan_update_body(max_generations_per_day=2), headers=_auth_headers(admin_token))
+
+    resp = client.get(
+        "/api/admin/audit-log", params={"target_type": "plan", "target_id": test_plan}, headers=_auth_headers(admin_token)
+    )
+    entries = resp.json()["entries"]
+    assert entries[0]["details"]["after"]["max_generations_per_day"] == 2
+    assert entries[1]["details"]["after"]["max_generations_per_day"] == 1
+
+
+def test_audit_log_pagination_metadata(client, admin):
+    admin_token, _, _ = admin
+    resp = client.get("/api/admin/audit-log", params={"limit": 3, "offset": 1}, headers=_auth_headers(admin_token))
+    assert resp.status_code == 200
+    assert resp.json()["limit"] == 3
+    assert resp.json()["offset"] == 1
+
+
+def test_non_admin_cannot_read_audit_log(client, normal_user):
+    non_admin_token, _, _ = normal_user
+    resp = client.get("/api/admin/audit-log", headers=_auth_headers(non_admin_token))
+    assert resp.status_code == 403
+
+
+def test_audit_log_write_failure_surfaces_generic_error_and_rolls_back_the_action(
+    client, admin, normal_user, monkeypatch
+):
+    """If writing the audit row itself fails, the whole get_session()
+    transaction (mutation + audit write) rolls back together -- the
+    account must NOT end up disabled with no audit trail of it, and the
+    error the client sees must be the same safe generic message any other
+    unhandled exception gets (CatchUnhandledExceptionsMiddleware), never a
+    raw exception detail."""
+    admin_token, _, _ = admin
+    _, _, target_id = normal_user
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated audit-log write failure with internal detail: /etc/secret-path")
+
+    monkeypatch.setattr(admin_service_module, "record_admin_audit_log", _boom)
+
+    resp = client.post(f"/api/admin/users/{target_id}/disable", headers=_auth_headers(admin_token))
+
+    assert resp.status_code == 500
+    assert resp.json() == {"detail": "An unexpected error occurred."}
+    assert "secret-path" not in resp.text
+    assert "RuntimeError" not in resp.text
+
+    with get_session() as session:
+        target = session.get(User, target_id)
+        assert target.is_active is True  # the disable itself was rolled back too
+
+
+def test_audit_entry_survives_deletion_of_the_acting_admin_account(client, admin, normal_user):
+    """ON DELETE SET NULL (db/models.py's AdminAuditLog, migration
+    e1f5538acd61): deleting the admin who performed an action must not
+    delete the historical record that it happened -- only the FK linking
+    it to that now-gone account."""
+    admin_token, _, admin_id = admin
+    _, _, target_id = normal_user
+
+    client.post(f"/api/admin/users/{target_id}/disable", headers=_auth_headers(admin_token))
+
+    del_resp = client.request(
+        "DELETE", "/api/auth/me", json={"password": "correct-horse-battery"}, headers=_auth_headers(admin_token)
+    )
+    assert del_resp.status_code == 204
+
+    with get_session() as session:
+        entries = (
+            session.query(AdminAuditLog)
+            .filter(AdminAuditLog.target_type == "user", AdminAuditLog.target_id == str(target_id))
+            .all()
+        )
+        assert len(entries) >= 1
+        assert all(e.admin_user_id is None for e in entries)
+
+
+def test_no_sensitive_fields_in_audit_log_or_plan_update_responses(client, admin, normal_user, test_plan):
+    admin_token, admin_email, target_id = admin
+    _, _, other_id = normal_user
+    client.post(f"/api/admin/users/{other_id}/disable", headers=_auth_headers(admin_token))
+    client.post(f"/api/admin/users/{other_id}/enable", headers=_auth_headers(admin_token))
+    client.post(f"/api/admin/plans/{test_plan}", json=_plan_update_body(), headers=_auth_headers(admin_token))
+
+    responses = [
+        client.get("/api/admin/audit-log", params={"limit": 200}, headers=_auth_headers(admin_token)),
+        client.get("/api/admin/plans", headers=_auth_headers(admin_token)),
+    ]
+    forbidden_substrings = ["password_hash", "password", "auth_version", "token_hash", "Bearer ", admin_token]
+    for resp in responses:
+        assert resp.status_code == 200
+        for forbidden in forbidden_substrings:
+            assert forbidden not in resp.text, f"{forbidden!r} leaked in {resp.request.url}"
+
+
 # --- Job visibility / filtering ----------------------------------------------------
 
 
@@ -420,6 +728,28 @@ def test_job_list_rejects_invalid_status_filter(client, admin):
     admin_token, _, _ = admin
     resp = client.get("/api/admin/jobs", params={"status": "not-a-real-status"}, headers=_auth_headers(admin_token))
     assert resp.status_code == 400
+
+
+def test_job_list_pagination(client, admin, normal_user):
+    admin_token, _, _ = admin
+    normal_token, _, _ = normal_user
+    _submit(client, headers=_auth_headers(normal_token))
+    _submit(client, headers=_auth_headers(normal_token))
+
+    first_page = client.get("/api/admin/jobs", params={"limit": 1, "offset": 0}, headers=_auth_headers(admin_token))
+    second_page = client.get("/api/admin/jobs", params={"limit": 1, "offset": 1}, headers=_auth_headers(admin_token))
+    assert first_page.status_code == 200 and second_page.status_code == 200
+    assert len(first_page.json()["jobs"]) == 1
+    assert first_page.json()["total"] == second_page.json()["total"]
+    assert first_page.json()["jobs"][0]["job_id"] != second_page.json()["jobs"][0]["job_id"]
+
+
+def test_list_jobs_echoes_requested_limit_and_offset(client, admin):
+    admin_token, _, _ = admin
+    resp = client.get("/api/admin/jobs", params={"limit": 5, "offset": 1}, headers=_auth_headers(admin_token))
+    assert resp.status_code == 200
+    assert resp.json()["limit"] == 5
+    assert resp.json()["offset"] == 1
 
 
 def test_job_summary_computes_processing_duration_for_terminal_jobs_only(client, admin, normal_user):
