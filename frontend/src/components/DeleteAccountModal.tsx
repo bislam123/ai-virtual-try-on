@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { ApiError } from "../api/http";
+import { useDialogA11y } from "../hooks/useDialogA11y";
 
 interface DeleteAccountModalProps {
   onClose: () => void;
@@ -28,19 +29,28 @@ export default function DeleteAccountModal({ onClose, onConfirm }: DeleteAccount
     }
   };
 
+  const panelRef = useDialogA11y(onClose);
+
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center" onClick={onClose}>
       <div
-        className="w-full max-w-sm rounded-t-2xl bg-white p-6 pb-8 shadow-xl sm:rounded-2xl"
+        ref={panelRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="delete-account-modal-title"
+        className="max-h-[85vh] w-full max-w-sm overflow-y-auto rounded-t-2xl bg-white p-6 pb-8 shadow-xl sm:rounded-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-bold text-slate-900">Delete account</h2>
+          <h2 id="delete-account-modal-title" className="text-lg font-bold text-slate-900">
+            Delete account
+          </h2>
           <button
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="flex h-11 w-11 items-center justify-center text-xl text-slate-400"
+            className="flex h-11 w-11 items-center justify-center text-xl text-slate-500"
           >
             ✕
           </button>
@@ -51,7 +61,11 @@ export default function DeleteAccountModal({ onClose, onConfirm }: DeleteAccount
         </p>
 
         <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-3">
+          <label htmlFor="delete-account-password" className="sr-only">
+            Current password
+          </label>
           <input
+            id="delete-account-password"
             type="password"
             required
             placeholder="Current password"
@@ -61,7 +75,11 @@ export default function DeleteAccountModal({ onClose, onConfirm }: DeleteAccount
             autoComplete="current-password"
           />
 
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          {error && (
+            <p role="alert" className="text-sm text-red-600">
+              {error}
+            </p>
+          )}
 
           <button
             type="submit"

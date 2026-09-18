@@ -95,3 +95,23 @@ describe("ResetPasswordScreen", () => {
     expect(onDone).toHaveBeenCalled();
   });
 });
+
+describe("ResetPasswordScreen — accessibility", () => {
+  it("both password fields have accessible labels, not just placeholders", () => {
+    render(<ResetPasswordScreen token="raw-token" onDone={vi.fn()} />);
+
+    expect(screen.getByLabelText("New password")).toBeInTheDocument();
+    expect(screen.getByLabelText("Confirm new password")).toBeInTheDocument();
+  });
+
+  it("announces a mismatched-confirmation error as an alert", async () => {
+    const user = userEvent.setup();
+    render(<ResetPasswordScreen token="raw-token" onDone={vi.fn()} />);
+
+    await user.type(screen.getByLabelText("New password"), "new-password-123");
+    await user.type(screen.getByLabelText("Confirm new password"), "different-password-456");
+    await user.click(screen.getByRole("button", { name: "Reset password" }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Passwords don't match.");
+  });
+});

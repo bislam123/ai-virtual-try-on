@@ -44,7 +44,9 @@ export default function AuthBar({ user, onLogin, onSignup, onForgotPassword, onL
           </button>
         </div>
       ) : justDeletedAccount ? (
-        <span className="text-slate-500">Your account has been deleted.</span>
+        <span role="status" className="text-slate-500">
+          Your account has been deleted.
+        </span>
       ) : (
         <button
           type="button"

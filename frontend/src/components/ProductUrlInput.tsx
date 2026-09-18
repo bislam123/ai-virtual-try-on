@@ -80,6 +80,7 @@ export default function ProductUrlInput({ onExtracted, initialUrl, initialImageU
     return (
       <button
         type="button"
+        aria-expanded={false}
         onClick={() => setExpanded(true)}
         className="flex min-h-11 items-center text-xs font-medium text-indigo-600"
       >
@@ -90,8 +91,12 @@ export default function ProductUrlInput({ onExtracted, initialUrl, initialImageU
 
   return (
     <div className="flex flex-col gap-2">
+      <label htmlFor="product-url-input" className="sr-only">
+        Product page URL
+      </label>
       <div className="flex gap-2">
         <input
+          id="product-url-input"
           type="url"
           inputMode="url"
           placeholder="https://example.com/product/..."
@@ -108,7 +113,11 @@ export default function ProductUrlInput({ onExtracted, initialUrl, initialImageU
           {isLoading ? "Fetching..." : "Fetch"}
         </button>
       </div>
-      {errorMessage && <p className="text-xs text-red-600">{errorMessage}</p>}
+      {errorMessage && (
+        <p role="alert" className="text-xs text-red-600">
+          {errorMessage}
+        </p>
+      )}
     </div>
   );
 }

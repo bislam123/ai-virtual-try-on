@@ -14,7 +14,28 @@ export default defineConfig({
     react(),
     tailwindcss(),
     VitePWA({
-      registerType: 'autoUpdate',
+      // 'prompt', not 'autoUpdate': confirmed directly (built dist/sw.js
+      // under the previous 'autoUpdate' setting) that this generates a
+      // service worker calling self.skipWaiting() unconditionally at
+      // top level, immediately taking control of every open tab the
+      // instant a new version is fetched -- with no client-side listener
+      // even registered (registerRegister was left at its default
+      // auto-injected bare-registration script, which never calls
+      // window.location.reload() either), meaning already-open tabs could
+      // silently end up with new-service-worker-controlled network
+      // requests running against still-old, already-loaded JS, a real
+      // stale-version mismatch risk, not just a missed UX nicety.
+      // 'prompt' makes the generated service worker wait for an explicit
+      // skip-waiting message instead -- paired with injectRegister:false
+      // and hooks/usePwaUpdate.ts's useRegisterSW() below, which is what
+      // actually sends that message once the user chooses to update.
+      registerType: 'prompt',
+      // The default auto-injected registerSW.js is a bare
+      // `navigator.serviceWorker.register(...)` call with no update
+      // handling at all -- disabled in favor of registering explicitly via
+      // virtual:pwa-register/react (hooks/usePwaUpdate.ts), the only way
+      // to get an onNeedRefresh callback this app can show real UI for.
+      injectRegister: false,
       includeAssets: ['favicon.svg'],
       manifest: {
         name: 'AI Try-On',

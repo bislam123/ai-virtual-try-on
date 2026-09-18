@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { ApiError } from "../api/http";
+import { useDialogA11y } from "../hooks/useDialogA11y";
 
 interface AuthModalProps {
   onClose: () => void;
@@ -51,27 +52,35 @@ export default function AuthModal({ onClose, onLogin, onSignup, onForgotPassword
   };
 
   const title = mode === "login" ? "Sign in" : mode === "signup" ? "Create account" : "Reset your password";
+  const panelRef = useDialogA11y(onClose);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center" onClick={onClose}>
       <div
-        className="w-full max-w-sm rounded-t-2xl bg-white p-6 pb-8 shadow-xl sm:rounded-2xl"
+        ref={panelRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="auth-modal-title"
+        className="max-h-[85vh] w-full max-w-sm overflow-y-auto rounded-t-2xl bg-white p-6 pb-8 shadow-xl sm:rounded-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-bold text-slate-900">{title}</h2>
+          <h2 id="auth-modal-title" className="text-lg font-bold text-slate-900">
+            {title}
+          </h2>
           <button
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="flex h-11 w-11 items-center justify-center text-xl text-slate-400"
+            className="flex h-11 w-11 items-center justify-center text-xl text-slate-500"
           >
             ✕
           </button>
         </div>
 
         {mode === "forgot" && forgotPasswordSent ? (
-          <div className="flex flex-col gap-4">
+          <div role="status" className="flex flex-col gap-4">
             <p className="text-sm text-slate-600">
               If an account exists for that email, we've sent a link to reset your password. Check your inbox.
             </p>
@@ -86,7 +95,11 @@ export default function AuthModal({ onClose, onLogin, onSignup, onForgotPassword
         ) : (
           <>
             <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-3">
+              <label htmlFor="auth-modal-email" className="sr-only">
+                Email
+              </label>
               <input
+                id="auth-modal-email"
                 type="email"
                 required
                 placeholder="Email"
@@ -96,16 +109,22 @@ export default function AuthModal({ onClose, onLogin, onSignup, onForgotPassword
                 autoComplete="email"
               />
               {mode !== "forgot" && (
-                <input
-                  type="password"
-                  required
-                  minLength={mode === "signup" ? 8 : undefined}
-                  placeholder="Password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="min-h-11 rounded-lg border border-slate-200 px-3 py-2.5 text-sm"
-                  autoComplete={mode === "login" ? "current-password" : "new-password"}
-                />
+                <>
+                  <label htmlFor="auth-modal-password" className="sr-only">
+                    Password
+                  </label>
+                  <input
+                    id="auth-modal-password"
+                    type="password"
+                    required
+                    minLength={mode === "signup" ? 8 : undefined}
+                    placeholder="Password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="min-h-11 rounded-lg border border-slate-200 px-3 py-2.5 text-sm"
+                    autoComplete={mode === "login" ? "current-password" : "new-password"}
+                  />
+                </>
               )}
 
               {mode === "login" && (
@@ -118,7 +137,11 @@ export default function AuthModal({ onClose, onLogin, onSignup, onForgotPassword
                 </button>
               )}
 
-              {error && <p className="text-sm text-red-600">{error}</p>}
+              {error && (
+                <p role="alert" className="text-sm text-red-600">
+                  {error}
+                </p>
+              )}
 
               <button
                 type="submit"
@@ -147,7 +170,7 @@ export default function AuthModal({ onClose, onLogin, onSignup, onForgotPassword
               </button>
             )}
 
-            <p className="mt-3 text-center text-xs text-slate-400">
+            <p className="mt-3 text-center text-xs text-slate-500">
               An account is only needed to save results to a permanent library — you can try the app without one.
             </p>
           </>

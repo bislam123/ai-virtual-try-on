@@ -90,3 +90,41 @@ describe("AuthModal — forgot password", () => {
     expect(screen.queryByRole("button", { name: "Forgot password?" })).not.toBeInTheDocument();
   });
 });
+
+describe("AuthModal — accessibility", () => {
+  it("exposes itself as a labelled dialog, and focuses the panel on open", () => {
+    render(<AuthModal onClose={vi.fn()} onLogin={noop} onSignup={noop} onForgotPassword={noop} />);
+
+    const dialog = screen.getByRole("dialog", { name: "Sign in" });
+    expect(dialog).toHaveFocus();
+  });
+
+  it("closes on Escape", async () => {
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(<AuthModal onClose={onClose} onLogin={noop} onSignup={noop} onForgotPassword={noop} />);
+
+    await user.keyboard("{Escape}");
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("email and password fields have accessible labels, not just placeholders", () => {
+    render(<AuthModal onClose={vi.fn()} onLogin={noop} onSignup={noop} onForgotPassword={noop} />);
+
+    expect(screen.getByLabelText("Email")).toBeInTheDocument();
+    expect(screen.getByLabelText("Password")).toBeInTheDocument();
+  });
+
+  it("announces a login/signup error as an alert", async () => {
+    const onLogin = vi.fn().mockRejectedValue(new ApiError("Incorrect email or password.", 401));
+    const user = userEvent.setup();
+    render(<AuthModal onClose={vi.fn()} onLogin={onLogin} onSignup={noop} onForgotPassword={noop} />);
+
+    await user.type(screen.getByLabelText("Email"), "person@example.com");
+    await user.type(screen.getByLabelText("Password"), "wrong-password");
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Incorrect email or password."));
+  });
+});

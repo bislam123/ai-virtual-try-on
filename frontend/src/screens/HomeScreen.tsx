@@ -126,7 +126,10 @@ export default function HomeScreen({
       </header>
 
       {errorMessage && (
-        <div className="flex items-start justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        <div
+          role="alert"
+          className="flex items-start justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
+        >
           <p>{errorMessage}</p>
           <button
             type="button"
@@ -188,18 +191,25 @@ export default function HomeScreen({
                   : "This already looks like a clean product photo — no changes made."}
               </p>
             )}
-            {extractionState.status === "error" && <p className="text-xs text-red-600">{extractionState.message}</p>}
+            {extractionState.status === "error" && (
+              <p role="alert" className="text-xs text-red-600">
+                {extractionState.message}
+              </p>
+            )}
           </div>
         )}
 
         {garmentImage && (
-          <div>
-            <p className="mb-2 text-sm font-medium text-slate-700">What kind of clothing is this?</p>
+          <div role="group" aria-labelledby="category-group-label">
+            <p id="category-group-label" className="mb-2 text-sm font-medium text-slate-700">
+              What kind of clothing is this?
+            </p>
             <div className="flex gap-2">
               {CATEGORY_OPTIONS.map((opt) => (
                 <button
                   key={opt.value}
                   type="button"
+                  aria-pressed={category === opt.value}
                   onClick={() => setCategory(opt.value)}
                   className={`min-h-11 flex-1 rounded-lg border px-2 py-2 text-xs font-semibold transition ${
                     category === opt.value
@@ -226,7 +236,7 @@ export default function HomeScreen({
 
       <UsageIndicator authToken={authToken} />
 
-      <p className="text-center text-xs text-slate-400">
+      <p className="text-center text-xs text-slate-500">
         Your photos are used only to generate this result and aren't kept unless you choose to save it.
       </p>
     </div>

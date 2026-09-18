@@ -20,3 +20,28 @@ describe("ProcessingScreen — cancel", () => {
     expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
   });
 });
+
+describe("ProcessingScreen — status announcements", () => {
+  it("shows a distinct, non-percentage stage label for pending vs. processing", () => {
+    const { rerender } = render(<ProcessingScreen status="pending" onCancel={vi.fn()} />);
+    expect(screen.getByText("Preparing your photos...")).toBeInTheDocument();
+    expect(screen.queryByText(/%/)).not.toBeInTheDocument(); // never invents a percentage
+
+    rerender(<ProcessingScreen status="processing" onCancel={vi.fn()} />);
+    expect(screen.getByText("Detecting clothing...")).toBeInTheDocument();
+  });
+
+  it("marks the stage label as an aria-live region, so a screen reader hears it change", () => {
+    render(<ProcessingScreen status="pending" onCancel={vi.fn()} />);
+
+    const label = screen.getByText("Preparing your photos...");
+    expect(label).toHaveAttribute("aria-live", "polite");
+  });
+
+  it("does not mark the every-second elapsed-time counter as live (that would spam a screen reader)", () => {
+    render(<ProcessingScreen status="pending" onCancel={vi.fn()} />);
+
+    const elapsed = screen.getByText(/elapsed/);
+    expect(elapsed).not.toHaveAttribute("aria-live");
+  });
+});

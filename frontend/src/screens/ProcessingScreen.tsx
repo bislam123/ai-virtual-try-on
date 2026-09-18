@@ -45,10 +45,17 @@ export default function ProcessingScreen({ status, onCancel }: ProcessingScreenP
     <div className="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center gap-6 px-6 text-center">
       <div className="h-14 w-14 animate-spin rounded-full border-4 border-indigo-200 border-t-indigo-600" />
       <div>
-        <p className="text-lg font-semibold text-slate-800">{currentLabel}</p>
+        {/* aria-live scoped to just this label, not the whole block: it
+            only changes on a meaningful stage transition (every 6s, or
+            pending->processing) -- the elapsed-time counter right below
+            ticks every second and must stay out of any live region, or a
+            screen reader would announce it every single second. */}
+        <p aria-live="polite" className="text-lg font-semibold text-slate-800">
+          {currentLabel}
+        </p>
         <p className="mt-1 text-sm text-slate-500">{formatElapsed(elapsedSeconds)} elapsed</p>
       </div>
-      <p className="max-w-xs text-xs text-slate-400">
+      <p className="max-w-xs text-xs text-slate-500">
         This can take a few minutes. Feel free to keep this tab open — we'll show your result as soon as it's ready.
       </p>
       <button

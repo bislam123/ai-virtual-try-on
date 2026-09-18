@@ -1,7 +1,9 @@
 import { useState } from "react";
 import OfflineBanner from "./components/OfflineBanner";
+import UpdatePrompt from "./components/UpdatePrompt";
 import { useAuth } from "./hooks/useAuth";
 import { useOnlineStatus } from "./hooks/useOnlineStatus";
+import { usePwaUpdate } from "./hooks/usePwaUpdate";
 import { useTryOnFlow } from "./hooks/useTryOnFlow";
 import HomeScreen from "./screens/HomeScreen";
 import ProcessingScreen from "./screens/ProcessingScreen";
@@ -24,6 +26,7 @@ export default function App() {
   const auth = useAuth();
   const flow = useTryOnFlow();
   const isOnline = useOnlineStatus();
+  const pwaUpdate = usePwaUpdate();
   const { submission } = flow;
   const [resetToken, setResetToken] = useState<string | null>(() => readResetToken());
 
@@ -76,6 +79,7 @@ export default function App() {
 
   return (
     <>
+      {pwaUpdate.needRefresh && <UpdatePrompt onUpdate={pwaUpdate.applyUpdate} />}
       {!isOnline && <OfflineBanner />}
       {screen}
     </>

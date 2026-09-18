@@ -46,7 +46,7 @@ export default function UsageIndicator({ authToken }: UsageIndicatorProps) {
   const isLow = (usage.remaining_today ?? usage.remaining_this_month ?? 1) === 0;
 
   return (
-    <p className={`text-center text-xs ${isLow ? "font-medium text-amber-600" : "text-slate-400"}`}>
+    <p className={`text-center text-xs ${isLow ? "font-medium text-amber-600" : "text-slate-500"}`}>
       {describe(usage)}
       {usage.plan === "free" && usage.remaining_today === 0 && " — premium plans are coming soon"}
     </p>

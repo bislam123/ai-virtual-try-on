@@ -112,13 +112,15 @@ export default function ResultScreen({
         <h1 className="text-2xl font-bold text-slate-900">Your Try-On Result</h1>
       </header>
 
-      <section className="rounded-2xl bg-white p-3 shadow-sm">
+      <section aria-live="polite" className="rounded-2xl bg-white p-3 shadow-sm">
         {resultPreviewUrl ? (
           <img src={resultPreviewUrl} alt="Try-on result" className="w-full rounded-xl object-contain" />
         ) : resultLoadError ? (
-          <p className="p-4 text-center text-sm text-red-600">{resultLoadError}</p>
+          <p role="alert" className="p-4 text-center text-sm text-red-600">
+            {resultLoadError}
+          </p>
         ) : (
-          <div className="flex h-64 items-center justify-center text-sm text-slate-400">Loading your result…</div>
+          <div className="flex h-64 items-center justify-center text-sm text-slate-500">Loading your result…</div>
         )}
       </section>
 
@@ -140,7 +142,11 @@ export default function ResultScreen({
         </button>
       )}
 
-      {actionMessage && <p className="text-center text-sm text-slate-500">{actionMessage}</p>}
+      {actionMessage && (
+        <p role="status" className="text-center text-sm text-slate-500">
+          {actionMessage}
+        </p>
+      )}
 
       <div className="grid grid-cols-2 gap-3">
         <button

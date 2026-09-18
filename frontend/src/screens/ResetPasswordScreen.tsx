@@ -49,7 +49,7 @@ export default function ResetPasswordScreen({ token, onDone }: ResetPasswordScre
 
       <section className="flex flex-col gap-4 rounded-2xl bg-white p-6 shadow-sm">
         {status === "success" ? (
-          <>
+          <div role="status" className="flex flex-col gap-4">
             <p className="text-sm text-slate-600">
               Your password has been reset. You can now sign in with your new password.
             </p>
@@ -60,10 +60,14 @@ export default function ResetPasswordScreen({ token, onDone }: ResetPasswordScre
             >
               Continue
             </button>
-          </>
+          </div>
         ) : (
           <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-3">
+            <label htmlFor="reset-password-new" className="sr-only">
+              New password
+            </label>
             <input
+              id="reset-password-new"
               type="password"
               required
               minLength={8}
@@ -73,7 +77,11 @@ export default function ResetPasswordScreen({ token, onDone }: ResetPasswordScre
               className="min-h-11 rounded-lg border border-slate-200 px-3 py-2.5 text-sm"
               autoComplete="new-password"
             />
+            <label htmlFor="reset-password-confirm" className="sr-only">
+              Confirm new password
+            </label>
             <input
+              id="reset-password-confirm"
               type="password"
               required
               minLength={8}
@@ -84,7 +92,11 @@ export default function ResetPasswordScreen({ token, onDone }: ResetPasswordScre
               autoComplete="new-password"
             />
 
-            {error && <p className="text-sm text-red-600">{error}</p>}
+            {error && (
+              <p role="alert" className="text-sm text-red-600">
+                {error}
+              </p>
+            )}
 
             <button
               type="submit"

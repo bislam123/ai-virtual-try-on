@@ -99,4 +99,22 @@ describe("ResultScreen — result image now requires the owner's token, not a ba
     await waitFor(() => expect(screen.getByText("You can only view your own try-on jobs.")).toBeInTheDocument());
     expect(screen.queryByAltText("Try-on result")).not.toBeInTheDocument();
   });
+
+  it("announces a result-load failure as an alert", async () => {
+    mockedTryOnClient.fetchResultImageBlob.mockRejectedValue(new ApiError("Couldn't load your result image.", 500));
+
+    render(
+      <ResultScreen
+        personImage={samplePersonFile()}
+        jobId="job-999"
+        saved={false}
+        authToken={null}
+        onSaved={noop}
+        onTryAnother={noop}
+        onChangeClothing={noop}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Couldn't load your result image."));
+  });
 });
