@@ -61,14 +61,22 @@ def recover_stale_processing_jobs(session, storage: StorageService, threshold_mi
         commits last harmlessly overwrites with an identical value, not
         a corrupting one. Neither process needs to coordinate with the
         other.
-      - Never touches a job's result file: only status=='processing' jobs
-        are ever matched here, and TryOnService.run_job only calls
-        storage.save_result() *after* a successful generation (which
-        transitions straight to completed, never processing again) -- a
-        recovered job never had a result to begin with, so there is
-        nothing for the existing TTL-based cleanup
-        (scripts/cleanup_expired_results.py, which only ever matches
-        status=='completed') to ever collide with here.
+      - Also removes any orphaned result file for a recovered job. The
+        common case is that a job recovered here genuinely never
+        produced one -- but TryOnService.run_job saves the result file
+        and marks the job completed as two separate statements (storage
+        write, then a DB status update); if the process is killed in
+        that narrow window, the generation's PNG already exists on disk
+        even though this sweep correctly recovers the still-'processing'
+        row to 'failed'. Safe by construction, not by a special case:
+        this function only ever matches rows where status=='processing'
+        at query time, and the existing TTL-based cleanup
+        (scripts/cleanup_expired_results.py) only ever matches
+        status=='completed' -- the two can never target the same row, so
+        this can never delete a result belonging to a genuinely
+        completed (let alone explicitly saved) job. delete_result() is
+        already a safe no-op when no file exists (storage.py), which is
+        still the overwhelming common case here.
       - Also cleans up any leftover temp uploads for each recovered job
         (same defensive reasoning as cleanup_expired_results.py's own
         temp-file sweep): by the time a job reaches provider.generate(),
@@ -105,5 +113,13 @@ def recover_stale_processing_jobs(session, storage: StorageService, threshold_mi
             storage.cleanup_temp(job.id)
         except Exception:
             logger.exception("Failed to clean up temp files for recovered job %s.", job.id)
+
+        # Separate try/except from the temp-file cleanup above so a
+        # failure in one can never prevent the other -- same per-job
+        # failure isolation cleanup_expired_results.py already uses.
+        try:
+            storage.delete_result(job.id)
+        except Exception:
+            logger.exception("Failed to clean up an orphaned result file for recovered job %s.", job.id)
 
     return result

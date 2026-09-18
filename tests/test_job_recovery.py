@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from PIL import Image
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
@@ -227,10 +228,13 @@ def test_unrelated_completed_and_saved_jobs_are_never_touched(tmp_path, job_tag)
 
 
 def test_recovered_job_never_had_a_result_file_to_lose(tmp_path, job_tag):
-    """A processing job, by definition, never reached the point in
-    TryOnService.run_job where a result is saved -- confirms recovery
-    never collides with (or accidentally deletes) a real result, since
-    there is never one to begin with for a job in this state."""
+    """The common case: a job that's genuinely still 'processing' never
+    reached the point in TryOnService.run_job where a result is saved, so
+    recovery has nothing to clean up here -- confirms the new
+    delete_result() call (see below) is harmless in the case that matters
+    most. See test_recovery_deletes_an_orphaned_result_file_left_by_the_
+    save_then_update_status_race for the narrow race where a result file
+    *does* already exist for a still-'processing' row."""
     storage = LocalStorageService(str(tmp_path))
     stale_time = datetime.now(timezone.utc) - timedelta(minutes=THRESHOLD_MINUTES + 1)
 
@@ -243,6 +247,85 @@ def test_recovered_job_never_had_a_result_file_to_lose(tmp_path, job_tag):
         assert storage.get_result_path(job_id) is None
         recover_stale_processing_jobs(session, storage, THRESHOLD_MINUTES)
 
+    assert storage.get_result_path(job_id) is None
+
+
+def test_recovery_deletes_an_orphaned_result_file_left_by_the_save_then_update_status_race(tmp_path, job_tag):
+    """TryOnService.run_job saves the result file and marks the job
+    completed as two separate statements. If the process is killed in
+    that exact window, the row is still 'processing' (this sweep's own
+    filter) even though a real result PNG already exists on disk -- this
+    test reproduces exactly that mid-race state directly (a 'processing'
+    row with a result file already present) without needing to actually
+    kill a process. Recovery must both fail the job and delete the now-
+    otherwise-permanently-orphaned file, since cleanup_expired_results.py's
+    own TTL sweep only ever matches status=='completed' and would never
+    find it."""
+    storage = LocalStorageService(str(tmp_path))
+    stale_time = datetime.now(timezone.utc) - timedelta(minutes=THRESHOLD_MINUTES + 1)
+
+    with get_session() as session:
+        job = _make_job(job_tag, updated_at=stale_time, status=JobStatus.PROCESSING.value)
+        session.add(job)
+        session.flush()
+        job_id = job.id
+
+        storage.save_result(job_id, Image.new("RGB", (4, 4), color="red"))
+        assert storage.get_result_path(job_id) is not None  # reproduces the race's mid-window state
+
+        result = recover_stale_processing_jobs(session, storage, THRESHOLD_MINUTES)
+
+    assert job_id in result.recovered_job_ids
+    assert storage.get_result_path(job_id) is None  # the orphaned file is gone
+
+    with get_session() as session:
+        assert session.get(JobRecord, job_id).status == JobStatus.FAILED.value
+
+
+def test_recovery_never_deletes_a_completed_jobs_result_file(tmp_path, job_tag):
+    """Safety boundary: recovery only ever matches status=='processing' at
+    query time -- a genuinely completed (and saved) job's result must
+    never be touched by this sweep, even though it now also calls
+    delete_result() for every job it actually recovers."""
+    storage = LocalStorageService(str(tmp_path))
+    very_old = datetime.now(timezone.utc) - timedelta(hours=1000)
+
+    with get_session() as session:
+        completed_job = _make_job(job_tag, updated_at=very_old, status=JobStatus.COMPLETED.value, saved=True)
+        session.add(completed_job)
+        session.flush()
+        job_id = completed_job.id
+        storage.save_result(job_id, Image.new("RGB", (4, 4), color="blue"))
+
+        recover_stale_processing_jobs(session, storage, THRESHOLD_MINUTES)
+
+    assert storage.get_result_path(job_id) is not None  # untouched
+
+
+def test_repeated_recovery_after_deleting_the_orphaned_result_is_still_idempotent(tmp_path, job_tag):
+    """Second (and third) run must not error just because the file this
+    sweep already deleted is now gone -- delete_result() is a safe no-op
+    for a missing path (storage.py) -- and the row no longer matches the
+    sweep's own status=='processing' filter either way."""
+    storage = LocalStorageService(str(tmp_path))
+    stale_time = datetime.now(timezone.utc) - timedelta(minutes=THRESHOLD_MINUTES + 1)
+
+    with get_session() as session:
+        job = _make_job(job_tag, updated_at=stale_time, status=JobStatus.PROCESSING.value)
+        session.add(job)
+        session.flush()
+        job_id = job.id
+        storage.save_result(job_id, Image.new("RGB", (4, 4), color="green"))
+
+        first = recover_stale_processing_jobs(session, storage, THRESHOLD_MINUTES)
+
+    with get_session() as session:
+        second = recover_stale_processing_jobs(session, storage, THRESHOLD_MINUTES)
+        third = recover_stale_processing_jobs(session, storage, THRESHOLD_MINUTES)
+
+    assert job_id in first.recovered_job_ids
+    assert job_id not in second.recovered_job_ids
+    assert job_id not in third.recovered_job_ids
     assert storage.get_result_path(job_id) is None
 
 

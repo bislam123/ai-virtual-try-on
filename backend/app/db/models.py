@@ -138,7 +138,14 @@ class JobRecord(Base):
     # Recorded for every job, not just anonymous ones, so quota counting
     # logic (services/quota_service.py) doesn't need a special case.
     client_ip: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    # Indexed: filtered on the hot path of every single try-on submission
+    # (CapacityService.get_status's WHERE status IN ('pending','processing'),
+    # called before a job is even created) and by both background sweeps
+    # (job_recovery.py's WHERE status='processing', cleanup_expired_results.py's
+    # WHERE status='completed') -- see migration 12cc6984ca8f's docstring for
+    # why this was added as a CONCURRENTLY index rather than bundled into an
+    # earlier migration.
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", index=True)
     error: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
 
     category: Mapped[str] = mapped_column(String(16), nullable=False)

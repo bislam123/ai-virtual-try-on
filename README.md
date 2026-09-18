@@ -4,7 +4,7 @@ See how clothes look on you before you buy them — a mobile-first virtual try-o
 
 ## Status
 
-🚧 **Milestone 11 of 13** — see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full milestone plan and current progress.
+✅ **Milestones 1–11 of 13 complete**, plus substantial production-readiness hardening beyond the original 13-milestone plan (through commit `79b9179`) — see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full milestone plan and every dated entry.
 
 | Milestone | Status |
 |---|---|
@@ -20,6 +20,14 @@ See how clothes look on you before you buy them — a mobile-first virtual try-o
 | 10. PWA / mobile optimization | ✅ Done |
 | 11. Usage limits & premium architecture | ✅ Done |
 | 12+ | ⬜ Not started |
+
+**Production-readiness hardening beyond the original 13-milestone plan** (dated entries in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md), full detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)/[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)):
+- **Security hardening** — rate limiting, CORS lockdown, security headers/CSP, request-body limits, image decompression-bomb protection, SSRF/DNS-rebinding protection for URL-based product extraction, idempotency keys, job-capacity limits and cancellation.
+- **Authentication** — password reset (SMTP-backed in production, console-logged in dev), server-side JWT revocation (`auth_version`), account deletion.
+- **Admin/Operations** — an authorization gate, account disable/enable, paginated user/job visibility, plan-limit management, a persistent audit log of admin actions with its own read-only viewer, and an operational dashboard.
+- **Production deployment preparation** — a Dockerfile, systemd units, an nginx reference config, a CI workflow, a real database-backed health check, and a real smoke test — all reviewed and documented, **none of it deployed anywhere yet**.
+
+**Not yet done, stated plainly**: no production hosting exists — application, database, and reverse-proxy configuration are prepared but not deployed to any real server. No GPU host has been purchased or provisioned; the only real inference measurement is a free-tier Google Colab Tesla T4 run (see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)'s GPU deployment section) — no RTX 4090/A40/or any other production-class GPU has been benchmarked. No payments/subscriptions exist.
 
 ## Non-negotiables (see full brief for details)
 
