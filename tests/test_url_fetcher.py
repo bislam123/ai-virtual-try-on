@@ -295,6 +295,32 @@ def test_fetch_image_from_url_invalid_content_raises_clear_error(monkeypatch):
         fetcher.fetch_image_from_url("https://cdn.example.com/not-an-image")
 
 
+def test_fetch_image_from_url_rejects_oversized_dimensions_before_full_decode(monkeypatch):
+    """A production-readiness audit finding: _decode_image used to call
+    img.load() with no dimension check at all, on these unauthenticated,
+    internet-reachable endpoints -- an image whose header declares
+    dimensions in Pillow's own DecompressionBombWarning band (above
+    Image.MAX_IMAGE_PIXELS but below its 2x hard-error threshold) would
+    fully decode into memory before anything rejected it. Fixed by reading
+    width/height from the header first, mirroring
+    backend/app/core/validation.py's existing pattern for direct uploads.
+
+    The dimension cap is monkeypatched down to keep this test fast and
+    memory-light -- the real 4096px production cap would need an
+    unreasonably large image to actually exceed."""
+    monkeypatch.setattr(http_fetcher_module, "_MAX_IMAGE_DIMENSION_PX", 10)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_png_bytes(), headers={"content-type": "image/png"})  # 300x400
+
+    _disable_ssrf_pinning(monkeypatch)
+    transport = httpx.MockTransport(handler)
+
+    fetcher = HttpProductPageFetcher(transport=transport)
+    with pytest.raises(ProductExtractionError, match="couldn't find a product image"):
+        fetcher.fetch_image_from_url("https://cdn.example.com/oversized.png")
+
+
 def test_request_connects_to_pinned_ip_not_a_second_dns_lookup(monkeypatch):
     """The DNS-rebinding fix, verified end-to-end through _request: the
     actual HTTP connection must go to the IP resolve_pinned_connect_url

@@ -38,6 +38,19 @@ _MAX_PAGE_BYTES = 5 * 1024 * 1024
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
 _MAX_REDIRECTS = 3
 _ALLOWED_IMAGE_CONTENT_TYPES = {"JPEG", "PNG", "WEBP"}
+# Mirrors backend/app/core/validation.py's max_image_dimension_px default
+# and its exact reasoning: Pillow's own decompression-bomb guard
+# (Image.MAX_IMAGE_PIXELS, ~89.5M pixels) only raises above 2x that
+# threshold -- between 1x and 2x it just warns and decodes anyway. A
+# small, highly-compressible file (e.g. a large solid-color PNG) can
+# declare dimensions in that warning band, well within _MAX_IMAGE_BYTES
+# above, and fully decode into a large in-memory buffer before any check
+# here would otherwise catch it. These endpoints are unauthenticated and
+# internet-reachable (any caller-supplied product/image URL, not just this
+# app's own uploads), so this is checked from the header -- before the
+# expensive img.load() decode -- the same way validation.py already does
+# for direct uploads.
+_MAX_IMAGE_DIMENSION_PX = 4096
 
 NO_IMAGE_FOUND_MESSAGE = (
     "We couldn't find a product image on that page. Please upload a photo or screenshot instead."
@@ -170,10 +183,20 @@ class HttpProductPageFetcher(ProductPageFetcher):
 def _decode_image(data: bytes) -> Image.Image:
     try:
         img = Image.open(BytesIO(data))
-        img.load()
     except Exception:
         raise ProductExtractionError(NO_IMAGE_FOUND_MESSAGE)
     if img.format not in _ALLOWED_IMAGE_CONTENT_TYPES:
+        raise ProductExtractionError(NO_IMAGE_FOUND_MESSAGE)
+
+    # Read from the header Image.open() already parsed -- before img.load()
+    # actually decodes pixel data. See _MAX_IMAGE_DIMENSION_PX above for why.
+    width, height = img.size
+    if width > _MAX_IMAGE_DIMENSION_PX or height > _MAX_IMAGE_DIMENSION_PX:
+        raise ProductExtractionError(NO_IMAGE_FOUND_MESSAGE)
+
+    try:
+        img.load()
+    except Exception:
         raise ProductExtractionError(NO_IMAGE_FOUND_MESSAGE)
     return img.convert("RGB")
 

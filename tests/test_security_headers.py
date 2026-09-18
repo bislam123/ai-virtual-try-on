@@ -26,7 +26,7 @@ from sqlalchemy.exc import OperationalError
 
 from backend.app.api import auth as auth_module
 from backend.app.core.body_size_limit import RequestBodySizeLimitMiddleware
-from backend.app.core.errors import configure_exception_handlers
+from backend.app.core.errors import CatchUnhandledExceptionsMiddleware, configure_exception_handlers
 from backend.app.core.security_headers import SecurityHeadersMiddleware
 from backend.app.db import User, engine, get_session
 from backend.app.services.rate_limiter import RateLimiter
@@ -46,7 +46,8 @@ EXPECTED_HEADERS = {
 
 def _make_app(tmp_path, max_request_body_bytes: int = 25 * 1024 * 1024) -> FastAPI:
     app = FastAPI()
-    # Same order as main.py: CORS added last so it's outermost.
+    # Same order as main.py: CatchUnhandledExceptionsMiddleware innermost, CORS outermost.
+    app.add_middleware(CatchUnhandledExceptionsMiddleware)
     app.add_middleware(RequestBodySizeLimitMiddleware, max_bytes=max_request_body_bytes)
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(
@@ -71,6 +72,13 @@ def _make_app(tmp_path, max_request_body_bytes: int = 25 * 1024 * 1024) -> FastA
     @app.get("/fake-image")
     async def fake_image():
         return Response(content=b"fake-png-bytes", media_type="image/png")
+
+    @app.get("/boom")
+    async def boom():
+        # A genuinely unhandled exception -- not a UserFacingError, not an
+        # HTTPException, not a validation error -- the case the catch-all
+        # handler in core/errors.py exists for.
+        raise ValueError("simulated unhandled bug")
 
     return app
 
@@ -139,6 +147,23 @@ def test_validation_error_response_has_security_headers(client):
     UserFacingError/HTTPException, still expected to carry the headers."""
     resp = client.post("/api/auth/signup", json={"email": "not-an-email", "password": "whatever123"})
     assert resp.status_code == 422
+    for name, value in EXPECTED_HEADERS.items():
+        assert resp.headers[name] == value
+
+
+def test_unhandled_exception_response_still_has_security_headers(client):
+    """A genuinely unhandled exception (a real bug, not a UserFacingError)
+    must not skip SecurityHeadersMiddleware -- see core/errors.py's
+    CatchUnhandledExceptionsMiddleware docstring for why this needed its
+    own middleware, and never leaks the exception's own message.
+    CatchUnhandledExceptionsMiddleware fully handles it within the app, so
+    (unlike a truly unhandled exception) it never reaches the ASGI server
+    -- the default client fixture's TestClient is fine here."""
+    resp = client.get("/boom")
+
+    assert resp.status_code == 500
+    assert resp.json() == {"detail": "An unexpected error occurred."}
+    assert "simulated unhandled bug" not in resp.text
     for name, value in EXPECTED_HEADERS.items():
         assert resp.headers[name] == value
 

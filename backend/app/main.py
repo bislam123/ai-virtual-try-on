@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .api import auth, extraction, tryon, usage
 from .config import settings
 from .core.body_size_limit import RequestBodySizeLimitMiddleware
-from .core.errors import configure_exception_handlers
+from .core.errors import CatchUnhandledExceptionsMiddleware, configure_exception_handlers
 from .core.security_headers import SecurityHeadersMiddleware
 from .db import get_session
 from .providers.selfhosted import SelfHostedVTONProvider
@@ -107,6 +107,12 @@ app = FastAPI(title="AI Try-On API", lifespan=lifespan)
 # tests/test_security_headers.py / tests/test_body_size_limit.py for the
 # direct proof that CORS headers actually land on these middlewares'
 # responses, not just on the router's.
+#
+# CatchUnhandledExceptionsMiddleware is added first (innermost) so it sees
+# exceptions from the router before anything else does -- see its own
+# docstring in core/errors.py for why it has to be a middleware here
+# rather than an @app.exception_handler(Exception).
+app.add_middleware(CatchUnhandledExceptionsMiddleware)
 app.add_middleware(RequestBodySizeLimitMiddleware, max_bytes=settings.max_request_body_bytes)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(
